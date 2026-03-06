@@ -1,0 +1,184 @@
+# 使用提醒:
+# 1. xbot包提供软件自动化、数据表格、Excel、日志、AI等功能
+# 2. package包提供访问当前应用数据的功能，如获取元素、访问全局变量、获取资源文件等功能
+# 3. 当此模块作为流程独立运行时执行main函数
+# 4. 可视化流程中可以通过"调用模块"的指令使用此模块
+
+import xbot
+from xbot import print, sleep
+from .import package
+from .package import variables as glv
+import json
+import requests
+import os
+
+def call_ollama(prompt, model="qwen3:8b"):
+    """
+    简单调用本地Ollama模型，自动处理代理问题
+    
+    Args:
+        prompt: 提示词
+        model: 模型名称，默认qwen3:8b
+        
+    Returns:
+        模型回复的文本
+    """
+    try:
+        # Ollama API地址 - 使用127.0.0.1比localhost更稳定
+        url = "http://127.0.0.1:11434/api/generate"
+        
+        # 请求数据
+        data = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False
+        }
+        
+        # 方法1: 创建独立的session，不继承系统代理设置
+        session = requests.Session()
+        
+        # 关键设置：清空代理配置
+        session.trust_env = False  # 不信任环境变量中的代理设置
+        
+        # 方法2: 设置NO_PROXY环境变量（临时生效）
+        original_no_proxy = os.environ.get('NO_PROXY', '')
+        os.environ['NO_PROXY'] = '127.0.0.1,localhost,::1'
+        
+        try:
+            # 发送请求
+            response = session.post(url, json=data, timeout=30)
+            
+            # 检查响应状态
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("response", "").strip()
+            else:
+                return f"请求失败，状态码: {response.status_code}"
+                
+        finally:
+            # 恢复原来的NO_PROXY设置
+            if original_no_proxy:
+                os.environ['NO_PROXY'] = original_no_proxy
+            else:
+                # 如果原来没有设置，就删除我们设置的
+                os.environ.pop('NO_PROXY', None)
+            
+    except requests.exceptions.ConnectionError:
+        # 尝试用备用方法连接
+        try:
+            return call_ollama_fallback(prompt, model)
+        except:
+            return "连接失败，请确保Ollama已启动且运行在11434端口"
+    except requests.exceptions.Timeout:
+        return "请求超时，请检查Ollama服务状态"
+    except Exception as e:
+        return f"调用出错: {str(e)}"
+
+def call_ollama_fallback(prompt, model="qwen3:8b"):
+    """
+    备用调用方法，使用不同的绕过代理策略
+    """
+    url = "http://127.0.0.1:11434/api/generate"
+    data = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False
+    }
+    
+    # 方法3: 使用requests的直接调用，并指定proxies参数为空
+    response = requests.post(
+        url, 
+        json=data, 
+        timeout=30,
+        proxies={
+            "http": None,
+            "https": None,
+        }
+    )
+    
+    if response.status_code == 200:
+        result = response.json()
+        return result.get("response", "").strip()
+    else:
+        return f"备用方法请求失败，状态码: {response.status_code}"
+
+def test_ollama_connection():
+    """
+    测试Ollama连接状态
+    """
+    try:
+        session = requests.Session()
+        session.trust_env = False
+        
+        # 简单的连接测试
+        test_url = "http://127.0.0.1:11434/api/tags"
+        response = session.get(test_url, timeout=5)
+        
+        if response.status_code == 200:
+            return True, "Ollama服务连接正常"
+        else:
+            return False, f"Ollama服务异常，状态码: {response.status_code}"
+    except Exception as e:
+        return False, f"无法连接到Ollama服务: {str(e)}"
+
+def main(args):
+    """
+    主函数，测试Ollama调用
+    
+    Args:
+        args: 可包含以下参数：
+            - prompt: 测试提示词（可选）
+            - model: 模型名称（可选）
+    """
+    # 获取测试提示词
+    test_prompt = args.get('prompt', '你好，请用一句话介绍你自己。')
+    model = args.get('model', 'qwen3:8b')
+    
+    print(f"测试提示词: {test_prompt}")
+    print(f"使用模型: {model}")
+    
+    # 先测试连接
+    print("正在测试Ollama连接...")
+    connected, message = test_ollama_connection()
+    print(f"连接测试: {message}")
+    
+    if not connected:
+        print("警告: Ollama连接测试失败，但仍将继续尝试调用...")
+    
+    print("正在调用本地Ollama模型...")
+    
+    # 调用Ollama
+    result = call_ollama(test_prompt, model)
+    
+    print(f"模型回复: {result}")
+    
+    # 将结果保存到全局变量
+    glv["ollama_test_result"] = result
+    glv["ollama_last_model"] = model
+    
+    # 如果需要，还可以保存更多信息
+    glv["ollama_last_prompt"] = test_prompt
+    
+    return {
+        "success": connected,
+        "message": message if not connected else "调用成功",
+        "result": result,
+        "model": model
+    }
+
+if __name__ == "__main__":
+    # 模块独立运行时测试
+    test_args = {
+        "prompt": "你好，你是谁？请简要介绍你自己。",
+        "model": "qwen3:8b"
+    }
+    
+    print("=" * 50)
+    print("Ollama调用模块测试")
+    print("=" * 50)
+    
+    result = main(test_args)
+    
+    print("\n" + "=" * 50)
+    print(f"测试完成: {'成功' if result.get('success', False) else '警告'}")
+    print("=" * 50)

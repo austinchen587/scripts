@@ -1,0 +1,45 @@
+# Python 字节码与缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# 数据库文件 (SQLite/Chroma/Vector DB)
+*.sqlite3
+vector_db/
+vector_cache/
+*.npy
+chroma/
+
+# 爬虫与临时数据 (根据你的结构提取)
+data/
+downloads/
+source_file/
+temp_images/
+attachments/
+images/
+pdfs/
+outputs/
+browser_data/
+*.png
+*.jpg
+*.jpeg
+
+# 日志文件
+*.log
+logs/
+log/
+
+# 系统与虚拟环境
+.DS_Store
+.venv/
+venv/
+env/
+.env
+.idea/
+.vscode/
+
+# 其他临时文件
+*.bat
+*.tmp
