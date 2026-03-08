@@ -126,6 +126,9 @@ def save_skus_to_db(records):
         with conn.cursor() as cur:
             cur.execute(create_sql)
             _ensure_column_exists(conn, 'procurement_commodity_sku', 'brand_id', 'INTEGER')
+            # 👉 [新增] 确保存在详情页参数列和状态列
+            _ensure_column_exists(conn, 'procurement_commodity_sku', 'detail_specs', 'TEXT')
+            _ensure_column_exists(conn, 'procurement_commodity_sku', 'fetch_status', 'INTEGER DEFAULT 0')
             
             insert_sql = """
                 INSERT INTO procurement_commodity_sku 
@@ -262,5 +265,48 @@ def save_failed_task(task_info):
     except Exception as e:
         if conn: conn.rollback()
         logger.error(f"记录失败/重试Result出错: {e}")
+    finally:
+        if conn: conn.close()
+
+def get_pending_detail_tasks():
+    """[新增] 获取 AI 指定要回采详情的 SKU（包含需求规格，用于匹配点击）"""
+    conn = None
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # 联合查询，把 result 表里的 specifications 拿出来给爬虫做匹配参考
+            cur.execute("""
+                SELECT s.procurement_id, s.sku, s.platform, s.detail_url, s.item_name, s.brand_id, r.specifications
+                FROM procurement_commodity_sku s
+                JOIN procurement_commodity_result r ON s.brand_id = r.brand_id
+                WHERE s.fetch_status = 1 
+                LIMIT 5;
+            """)
+            return cur.fetchall()
+    except Exception as e:
+        logger.error(f"获取详情页任务失败: {e}")
+        return []
+    finally:
+        if conn: conn.close()
+
+def update_sku_detail(procurement_id, sku, platform, specs_data):
+    """[新增] 保存详情数据，并敲钟唤醒 AI"""
+    conn = None
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        specs_json_str = json.dumps(specs_data, ensure_ascii=False)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE procurement_commodity_sku 
+                SET detail_specs = %s, fetch_status = 2, updated_at = CURRENT_TIMESTAMP
+                WHERE procurement_id = %s AND sku = %s AND platform = %s;
+            """, (specs_json_str, procurement_id, sku, platform))
+            
+            # 👉 [核心] 敲钟！唤醒 result_05 端的 AI
+            cur.execute("NOTIFY local_sku_channel, 'detail_ready';")
+            conn.commit()
+    except Exception as e:
+        logger.error(f"更新 SKU 详情失败: {e}")
+        if conn: conn.rollback()
     finally:
         if conn: conn.close()

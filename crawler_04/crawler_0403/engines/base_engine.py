@@ -178,3 +178,105 @@ class BaseEngine:
                 
         except Exception as e:
             logger.warning(f"⚠️ [行为模拟] 闲逛失败 (不影响主流程): {e}")
+
+    # ============================================================
+    # 👉 [新增] 详情页混合回采：动态寻址点击 + 纯文本 + 长截图
+    # ============================================================
+    def fetch_detail_specs(self, detail_url, sku, platform, target_specs):
+        import random, time, os
+        from config import DATA_DIR
+        
+        screenshot_dir = os.path.join(DATA_DIR, 'screenshots')
+        os.makedirs(screenshot_dir, exist_ok=True)
+        image_save_path = os.path.join(screenshot_dir, f"{platform}_{sku}.png")
+        result_data = {"text": "", "image_path": ""}
+
+        try:
+            logger.info(f"   -> 🔎 [深入回采] 正在潜入 {platform} 详情页: {sku}")
+            self.tab = self.browser.new_tab(detail_url)
+            time.sleep(random.uniform(2, 4))
+            
+            # 🎯 核心防骗：跨平台规格按钮扫描与动态点击
+            if target_specs and str(target_specs).lower() != 'nan':
+                # 兼容三大平台 (JD, TB新老版, 1688新老版)
+                sku_selectors = [
+                    '.specification-item-sku', '.valueItem--smR4pNt4', 
+                    '.skuItem--Z2AJB9Ew .valueItem', '.expand-view-item', 
+                    '.sku-item', '.prop-item'
+                ]
+                
+                spec_buttons = []
+                for sel in sku_selectors:
+                    eles = self.tab.eles(f'css:{sel}')
+                    if eles: spec_buttons.extend(eles)
+                
+                clicked = False
+                target_keywords = [k for k in str(target_specs).replace(';',' ').replace(',',' ').split() if len(k)>1]
+                
+                for btn in spec_buttons:
+                    btn_text = btn.text.strip() if btn.text else ""
+                    if not btn_text: continue
+                    
+                    if any(k.upper() in btn_text.upper() for k in target_keywords):
+                        try:
+                            btn.click(by_js=True)
+                            logger.info(f"      🎯 [击破伪装] 成功点击匹配型号: {btn_text}")
+                            clicked = True
+                            time.sleep(random.uniform(2.0, 3.5)) # 等待价格刷新
+                            break
+                        except Exception as e:
+                            pass
+                
+                if not clicked:
+                    logger.warning(f"      ⚠️ 未能找到完全匹配的规格按钮，默认截取当前显示。")
+
+            # 深度滚动，触发“懒加载”图片
+            logger.info("      正在向下滚动加载详情长图...")
+            for _ in range(random.randint(4, 7)):
+                self.tab.scroll.down(random.randint(600, 1000))
+                time.sleep(random.uniform(0.5, 1.2))
+            
+            self.tab.scroll.up(random.randint(1000, 2000))
+            time.sleep(1)
+
+            # 提取真实价格与参数表
+            price_selectors = ['.summary-price', '.priceInt--', '.price-info', '.priceWrap--R3TrPIS6', '.od-price-container']
+            real_price = "未提取到实时价格"
+            for ps in price_selectors:
+                price_ele = self.tab.ele(f'css:{ps}', timeout=0.5)
+                if price_ele:
+                    real_price = price_ele.text.replace('\n', '')
+                    break
+            
+            param_selectors = ['.p-parameter', '.attributes-list', '.offer-attr-list', '.ant-descriptions-view', '#productAttributes']
+            spec_text = "未提取到格式化参数表"
+            for ps in param_selectors:
+                spec_ele = self.tab.ele(f'css:{ps}', timeout=0.5)
+                if spec_ele:
+                    spec_text = spec_ele.text
+                    break
+
+            result_data["text"] = f"【型号选中后实时价格】: {real_price}\n【网页提取参数表】:\n{spec_text}"
+            logger.info(f"      ✅ 成功提取文本数据 (当前价格: {real_price})")
+
+            # 智能寻找详情区域并截图
+            detail_body = self.tab.ele('#J-detail-content', timeout=0.5) or \
+                          self.tab.ele('#description', timeout=0.5) or \
+                          self.tab.ele('.html-description', timeout=0.5) or \
+                          self.tab.ele('#detail-shadow-vender-top', timeout=0.5) or \
+                          self.tab.ele('tag:body', timeout=0.5) 
+            
+            if detail_body:
+                detail_body.get_screenshot(path=image_save_path)
+                result_data["image_path"] = image_save_path
+                logger.info(f"      📸 详情图已保存至: {image_save_path}")
+            
+            return result_data
+            
+        except Exception as e:
+            logger.error(f"      ❌ 详情页回采发生异常: {e}")
+            return {"text": f"抓取异常: {str(e)}", "image_path": ""}
+        finally:
+            if self.tab:
+                try: self.tab.close()
+                except: pass

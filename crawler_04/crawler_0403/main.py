@@ -259,6 +259,37 @@ def run_infinite_loop():
                 except: pass
 
             if len(running_futures) < MAX_WORKERS:
+                # ======================================================
+                # 👉 [新增] 优先级 1：优先处理被 AI 挂起的详情回采任务
+                # ======================================================
+                from db_helper import get_pending_detail_tasks, update_sku_detail
+                detail_tasks = get_pending_detail_tasks()
+                
+                if detail_tasks:
+                    task = detail_tasks[0]
+                    platform = task['platform']
+                    browser = pool.browsers.get(platform)
+                    
+                    if browser:
+                        logger.info(f"🔍 [补签任务] 正在回采详情: {task['item_name']} (平台: {platform})")
+                        
+                        # 实例化对应的平台引擎
+                        if platform == '京东': engine = JDEngine(browser)
+                        elif platform == '淘宝': engine = TaobaoEngine(browser)
+                        elif platform == '1688': engine = S1688Engine(browser)
+                        else: continue
+
+                        # 执行回采并更新数据库 (带截屏、带智能点击)
+                        specs_data = engine.fetch_detail_specs(
+                            task['detail_url'], task['sku'], platform, task.get('specifications', '')
+                        )
+                        update_sku_detail(task['procurement_id'], task['sku'], platform, specs_data)
+                        
+                        time.sleep(2)
+                        continue # 回采完成一个，直接进入下一轮循环，不继续拿海选任务
+                # ======================================================
+                
+                # 下面是你原本的代码，保持不变，作为优先级 2：
                 pending_candidates = get_pending_tasks() 
                 assigned_task = None
                 

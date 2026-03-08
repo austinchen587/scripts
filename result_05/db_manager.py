@@ -44,13 +44,14 @@ def init_result_table():
     finally:
         conn.close()
 
+# 修改原有函数：增加 waiting_detail 的排除
 def get_processed_brand_ids():
     conn = get_connection()
     if not conn: return set()
     try:
         with conn.cursor() as cur:
-            # 【修复2】不要把 status='retry' 的任务当成已完成，让 AI 能够接单
-            cur.execute(f"SELECT brand_id FROM {TABLES['result']} WHERE brand_id IS NOT NULL AND status != 'retry'")
+            # 👉 [重点修改]: 原本是 status != 'retry'，现在加上 waiting_detail
+            cur.execute(f"SELECT brand_id FROM {TABLES['result']} WHERE brand_id IS NOT NULL AND status NOT IN ('retry', 'waiting_detail')")
             return {row[0] for row in cur.fetchall()}
     except Exception as e:
         logger.error(f"查询已处理ID失败: {e}")
@@ -96,5 +97,18 @@ def save_analysis_result(data):
     except Exception as e:
         logger.error(f"保存结果失败 [BrandID: {data.get('brand_id')}]: {e}")
         if conn: conn.rollback()
+    finally:
+        conn.close()
+
+# 👉 [新增] 标记商品需要爬虫去看详情
+def mark_skus_for_detail(procurement_id, skus_list):
+    conn = get_connection()
+    if not conn or not skus_list: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE {TABLES['sku']} SET fetch_status = 1 WHERE procurement_id = %s AND sku = ANY(%s)", (str(procurement_id), list(skus_list)))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"更新 SKU 详情状态失败: {e}")
     finally:
         conn.close()

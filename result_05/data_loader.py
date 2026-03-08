@@ -25,8 +25,9 @@ def fetch_procurement_groups():
             demands = cur.fetchall()
 
             logger.info("正在读取候选商品数据...")
+            # 👉 [修改] 增加 detail_specs 和 fetch_status
             sql_sku = f"""
-                SELECT procurement_id, sku, title, price, shop_name, sales, hot_info, detail_url, platform, item_name
+                SELECT procurement_id, sku, title, price, shop_name, sales, hot_info, detail_url, platform, item_name, detail_specs, fetch_status
                 FROM {TABLES['sku']}
             """
             cur.execute(sql_sku)
@@ -44,7 +45,10 @@ def fetch_procurement_groups():
                 'sku': row[1], 'title': row[2], 
                 'price': float(row[3]) if row[3] else 0.0,
                 'shop_name': row[4], 'sales': row[5], 'hot_info': row[6],
-                'detail_url': row[7], 'platform': row[8]
+                'detail_url': row[7], 'platform': row[8],
+                # 👉 [新增] 以下两行：
+                'detail_specs': row[10] if len(row) > 10 and row[10] else None,
+                'fetch_status': row[11] if len(row) > 11 and row[11] else 0
             }
             if map_key not in sku_map: sku_map[map_key] = []
             sku_map[map_key].append(item)

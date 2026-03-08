@@ -9,6 +9,7 @@ from sync_analysis_results import AnalysisResultSyncer  # 导入同步类
 from config import OLLAMA_CONFIG
 from logger import logger
 from local_listener import start_listener, local_event
+from db_manager import init_result_table, save_analysis_result, mark_skus_for_detail
 
 # 代理配置：防止请求本地 Ollama 时误走系统代理
 os.environ['NO_PROXY'] = 'localhost,127.0.0.1,0.0.0.0'
@@ -73,6 +74,22 @@ def run_procurement_cycle(syncer):
             result = tournament_selection(group['demand'], cands)
             duration = time.time() - start_time
             
+            # ==========================================================
+            # 👉 [必须补上的拦截代码] 拦截挂起信号，通知爬虫！
+            # ==========================================================
+            if isinstance(result, dict) and result.get('status') == 'need_detail':
+                mark_skus_for_detail(pid, result['skus'])
+                save_data = {
+                    "brand_id": brand_id, "procurement_id": pid, "item_name": name,
+                    "specifications": group['demand'].get('specifications', ''),
+                    "selected_suppliers": [], "reason": "等待爬虫进入详情页核查真实规格与价格...",
+                    "model": OLLAMA_CONFIG['model'], 
+                    "status": "waiting_detail" # 挂起状态
+                }
+                save_analysis_result(save_data)
+                continue # 直接跳过当前商品，去处理下一个
+            # ==========================================================
+            
             if result and result.get('selected'):
                 save_data = {
                     "brand_id": brand_id,
@@ -87,17 +104,22 @@ def run_procurement_cycle(syncer):
                 save_analysis_result(save_data) # 结果保存至本地 DB
                 logger.info(f"✅ 处理完成 ({duration:.1f}s)。Top1: ￥{result['selected'][0]['price']}")
             else:
-                logger.error(f"❌ 处理失败: 未生成有效结果 (ID: {brand_id})")
-                # 【新增】即便失败也要告诉云端，把 retry 冲掉
+                # 🚨 如果 selected 是空列表，或者 result 解析失败，走到这里
+                logger.warning(f"🚫 [流标拦截] ID:{brand_id} - 未能匹配到符合规格的商品！")
+                
+                # 尝试抓取 AI 留下的“遗言”(淘汰原因)，如果没有就用默认文本
+                ai_reason = result.get('overall_reasoning', '') if isinstance(result, dict) else ''
+                fail_reason = f"【风控拦截】{ai_reason}" if ai_reason else "AI未能从候选商品中匹配到符合规格的结果，可能遇到了搜索词偏差或低价陷阱。"
+                
                 fail_data = {
                     "brand_id": brand_id,
                     "procurement_id": pid,
                     "item_name": name,
                     "specifications": group['demand'].get('specifications', ''),
                     "selected_suppliers": [], 
-                    "reason": "AI未能从候选商品中匹配到符合规格的结果。",
+                    "reason": fail_reason, # 👉 这里用上了 AI 给出的人性化理由
                     "model": OLLAMA_CONFIG['model'],
-                    "status": "failed"   # 明确标记失败
+                    "status": "failed"   # 明确标记流标
                 }
                 save_analysis_result(fail_data)
 

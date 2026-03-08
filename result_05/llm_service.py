@@ -6,6 +6,7 @@ from data_filter import clean_and_filter_candidates
 from llm_api import invoke_ollama
 from config import OLLAMA_CONFIG
 from logger import logger
+from llm_api import invoke_ollama, analyze_image_with_vl # 确保把 analyze_image_with_vl 导进来
 
 def get_gaussian_samples(items, n_samples=5):
     """
@@ -299,7 +300,59 @@ def tournament_selection(demand, candidates):
         round_num += 1
         if not current_pool: return None
 
+    # ============================================================
+    # 👉 [漏斗截断] 检查留下来的优胜者是否已经抓过详情了？
+    # ============================================================
+    all_ready = all(c.get('fetch_status', 0) == 2 for c in current_pool)
+    if not all_ready:
+        logger.info(f"⏸️ 发现 Top {len(current_pool)} 候选人尚未获取详情，中断 AI 决赛，挂起并呼叫爬虫...")
+        return {
+            "status": "need_detail", 
+            "skus": [c['sku'] for c in current_pool]
+        }
+    # ============================================================
+
     logger.info(f"--- 终极决选 (剩余: {len(current_pool)}家) ---")
+
+    # ============================================================
+    # 👉 [升级版] 解析爬虫回传的 JSON，智能触发图文混合解析 (基于型号核查)
+    # ============================================================
+    # 提前把需求规格拆解成关键词列表 (例如: "NP-CR2300W 白色" -> ['NP-CR2300W', '白色'])
+    target_specs = str(demand.get('specifications', ''))
+    target_keywords = [k for k in target_specs.replace(';',' ').replace(',',' ').split() if len(k)>1]
+
+    for c in current_pool:
+        detail_json_str = c.get('detail_specs')
+        c['final_specs_text'] = "无有效参数"
+        
+        if detail_json_str:
+            try:
+                specs_data = json.loads(detail_json_str)
+                page_text = specs_data.get('text', '')
+                img_path = specs_data.get('image_path', '')
+
+                # 1. 检查文本是否缺失了我们要找的核心型号信息
+                text_missing_key_info = False
+                if target_keywords and page_text:
+                    # 统计文本中命中了多少个需求关键词
+                    match_count = sum(1 for k in target_keywords if k.upper() in page_text.upper())
+                    # 如果连一个核心词（比如型号）都没在网页文本里找到，说明文本是废话/兜底文案！
+                    if match_count == 0:
+                        text_missing_key_info = True
+
+                # 2. 【终极判断】：如果没有图、或者文本包含了“未提取到”、或者字数极少、或者【缺失核心型号】，全都要看图！
+                if img_path and ("未提取到" in page_text or len(page_text) < 30 or text_missing_key_info):
+                    logger.info(f"👁️ 发现 [{c['sku']}] 网页纯文本中未包含目标型号信息，正在召唤 Qwen3-VL 识图分析...")
+                    vl_text = analyze_image_with_vl(img_path, demand.get('item_name'))
+                    c['final_specs_text'] = f"{page_text}\n【Qwen3-VL 读图提取参数】:\n{vl_text}"
+                    logger.info(f"   ✅ 图文解析完毕！")
+                else:
+                    c['final_specs_text'] = page_text # 文本里明确写了我们要的型号，直接用，不浪费算力
+            except Exception as e:
+                c['final_specs_text'] = str(detail_json_str)
+    # ============================================================
+
+
     prompt_final = build_final_prompt(demand, current_pool)
     llm_result = invoke_ollama(prompt_final, "Final_Decision")
     
@@ -324,19 +377,12 @@ def tournament_selection(demand, candidates):
                     "detail_url": orig['detail_url'], "reason": full_reason
                 })
 
-    exist = {f['sku'] for f in final_selected}
-    remains = sorted([c for c in current_pool if str(c['sku']) not in exist], key=lambda x: x['price'])
-    
-    while len(final_selected) < 3 and remains:
-        bk = remains.pop(0)
-        final_selected.append({
-            "rank": 0, "sku": bk['sku'], "shop": bk['shop_name'], 
-            "price": bk['price'], "platform": bk.get('platform',''),
-            "detail_url": bk['detail_url'], "reason": "【自动补位】价格最低，请人工核对规格"
-        })
-    
+    # ============================================================
+    # 👉 [修改] 删除了之前 while 凑数补位的逻辑，宁可返回空列表也不乱塞错误商品！
+    # ============================================================
     final_selected.sort(key=lambda x: x['price'])
-    for i, item in enumerate(final_selected): item['rank'] = i + 1
+    for i, item in enumerate(final_selected): 
+        item['rank'] = i + 1
 
     overall = llm_result.get('overall_reasoning', '') if isinstance(llm_result, dict) else ""
     return {"selected": final_selected, "overall_reasoning": overall}
