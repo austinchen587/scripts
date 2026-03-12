@@ -41,7 +41,7 @@ TASKS = [
         "cwd": os.path.join(BASE_DIR, "procurement_ai_processor"),
         "script": "auto_launcher.py",
         "args": [],
-        "timeout": 1800
+        "timeout": 7200
     },
     {
         "name": "Step 4: 数据回传 (Local->Cloud)",

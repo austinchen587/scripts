@@ -32,7 +32,7 @@ TEXT2VEC_MODEL_PATH = r"D:\code\model\text2vec-large-chinese"
 LIBREOFFICE_PATH = r"D:\libreoffice\program\soffice.exe"
 
 # Poppler路径
-POPPLER_PATH = r"D:\Release-25.12.0-0\poppler-25.12.0"
+POPPLER_PATH = r"D:\poppler-25.12.0\Library\bin"
 POPPLER_BIN_PATH = r"D:\Release-25.12.0-0\poppler-25.12.0\Library\bin"
 # ========== 关键修复：强制设置环境变量 ==========
 os.environ['PATH'] = f"{POPPLER_BIN_PATH};{os.environ.get('PATH', '')}"
@@ -41,6 +41,15 @@ os.environ['PATH'] = f"{POPPLER_BIN_PATH};{os.environ.get('PATH', '')}"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 LLM_MODEL = "qwen3:8b"  # 用于文本处理的模型
 VISION_MODEL = "qwen3-vl:4b"  # 用于图片理解的模型 - 新增
+
+# 2. 新增：纯文本云端大模型 API 配置
+CLOUD_LLM_CONFIG = {
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3.5-27b",  # 阿里云的性价比神机
+    "api_key": "sk-7725072c412d4f4280d091a92772dda1", 
+    "timeout": 300,
+    "temperature": 0.1
+}
 
 # ========== RAG配置 ==========
 TOP_K_CASES = 3

@@ -1,5 +1,7 @@
+# data_loader.py
+from db_manager import get_connection
+from config import TABLES
 from logger import logger
-import numpy as np
 
 def clean_and_filter_candidates(candidates):
     """

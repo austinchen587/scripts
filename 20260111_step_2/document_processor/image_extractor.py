@@ -18,7 +18,7 @@ class OfficeImageExtractor:
         self.supported_extensions = ['.docx', '.xlsx', '.pptx', '.doc', '.xls', '.ppt', '.pdf']
 
         # --- 放大超时限制，确保4060显卡有足够时间处理多张图片 (20分钟) ---
-        self.MAX_IMAGE_PROCESS_TIME = 1200
+        self.MAX_IMAGE_PROCESS_TIME = 21600
     
     def extract_from_docx(self, file_path: Path, project_name: str = "") -> str:
         """从Word文档中提取文字和图片文字"""

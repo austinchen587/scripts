@@ -1,17 +1,17 @@
 # main.py
 import time
-import json
 import random
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from browser_manager import pool 
+import db_sync 
 from engines.jd_engine import JDEngine
 from engines.s1688_engine import S1688Engine
 from engines.taobao_engine import TaobaoEngine
 from processor import process_and_map
 from logger_helper import logger
-from db_helper import save_skus_to_db, save_task_result, clear_retry_placeholder, check_global_cache, r_client
+from db_helper import get_pending_tasks, save_skus_to_db, save_failed_task, clear_retry_placeholder
 from engines.base_engine import AntiSpiderException
-
+from cloud_listener import start_listener, cloud_event
 
 # ================= 配置区域 =================
 WORK_DURATION = 4 * 60 * 60 
@@ -67,14 +67,13 @@ def prepare_login_environment():
         get_or_create_tab(pool.browsers['1688'], '1688.com', 'https://www.1688.com/')
 
     logger.info("🛑 [静默等待模式] 请在弹出的3个专属窗口登录，并搜索任意词...")
-    while True:
-        all_ready, not_ready_names = pool.check_all_browsers_ready()
-        if all_ready:
-            logger.info("✅ 所有浏览器就绪！")
-            break
-        time.sleep(2)
-    logger.info("⏳ 倒计时 10秒 开跑...")
-    time.sleep(10)
+    
+    # 删除了那个容易卡死的 while True 自动检测，改为人工确认
+    input("👉 浏览器操作完成后，请在此黑窗口【按下 Enter 回车键】放行...")
+    
+    logger.info("✅ 所有浏览器就绪！")
+    logger.info("⏳ 倒计时 3秒 开跑...")
+    time.sleep(3) # 既然人工确认了，倒计时可以缩短点
 
 def process_whole_task(task):
     kw = task['key_word']
@@ -162,8 +161,8 @@ def process_whole_task(task):
                 except Exception as clear_err:
                     logger.error(f"      💥 [{b_name}] 清理缓存出错: {clear_err}")
                 
-                # 👉 [修复 1] 使用新的 save_task_result 记录重试状态
-                save_task_result(task, status='retry') 
+                task['status'] = 'retry'
+                save_failed_task(task)
                 break 
 
             except Exception as e:
@@ -195,26 +194,17 @@ def process_whole_task(task):
                 except Exception as cleanup_err:
                     logger.error(f"      💥 [{b_name}] 清理标签页出错: {cleanup_err}")
 
-        # ==========================================
-        # 👉 [修复 2] 结果结算与上报 (核心修复区)
-        # ==========================================
-
         if has_any_result:
-            # 抓取成功，必须写入 completed 状态，否则前端会一直转圈
-            save_task_result(task, status='completed') 
-            # 通知 AI 节点选品，带上发起请求的服务器 IP
-            clear_retry_placeholder(brand_id, task.get('server_ip')) 
-            
+            clear_retry_placeholder(brand_id)
         elif task.get('status') == 'retry':
-            pass # 已经在上面的 except 里保存过了
-            
+            pass 
         elif skipped_due_to_cooldown:
             logger.info(f"🔄 任务 [{item_name}] 因目标平台全在冷却中，主动挂起重试。")
-            save_task_result(task, status='retry') # 👉 挂起重试
-            
+            task['status'] = 'retry'
+            save_failed_task(task)
         else:
             logger.warning(f"🚫 任务 [{item_name}] 无结果，标记人工审核。")
-            save_task_result(task, status='failed') # 👉 无结果
+            save_failed_task(task)
         
         logger.info(f"🏁 [交单] 完成任务: {item_name}")
     
@@ -224,59 +214,116 @@ def process_whole_task(task):
     return brand_id
 
 def run_infinite_loop():
-    # 2. 启动浏览器矩阵 (保持原有的 DrissionPage 逻辑)
+    last_sync_time = time.time()
+    
+    try:
+        if hasattr(db_sync, 'run_sync_download'): 
+            db_sync.run_sync_download()
+            if hasattr(db_sync, 'cleanup_local_retry_cache'):
+                db_sync.cleanup_local_retry_cache()
+            last_sync_time = time.time()
+    except Exception as e:
+        logger.error(f"❌ 初始同步/清理失败: {e}")
+
     pool.start_all()
     prepare_login_environment()
 
-    logger.info("🤖 0404 分布式爬虫节点已上线，正在静默等待云端派单...")
+    logger.info(f"🚀 开启 1 线程调度 (底层3大浏览器隔离专线)...")
+    current_cycle_start_time = time.time()
+
+    # [新增] 启动云端发令枪监听
+    start_listener()
+
+    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+    running_futures = set()
 
     while True:
         try:
-            # 3. 🔥 [核心改动] 阻塞式抢单 (BRPOP)
-            # 它会静默等待，不消耗 CPU，直到云端 Redis 出现任务
-            task_data = r_client.brpop("crawler_task_queue", timeout=0)
-            
-            if task_data:
-                # task_data 格式为 ('crawler_task_queue', '{"brand_id": 123, ...}')
-                _, task_json = task_data
-                assigned_task = json.loads(task_json)
+            if time.time() - current_cycle_start_time > WORK_DURATION:
+                logger.info("⏰ 达到工作时限，等待当前任务全部结束后休息...")
+                wait(running_futures) 
+                running_futures.clear()
+                PROCESSING_BRAND_IDS.clear() 
                 
-                brand_id = assigned_task.get('brand_id')
-                item_name = assigned_task.get('item_name', '未知商品')
-                server_ip = assigned_task.get('server_ip', 'unknown') # 👈 提取发起请求的服务器身份
+                logger.info(f"⏰ 开始休息 {REST_DURATION/60} 分钟...")
+                time.sleep(REST_DURATION)
+                current_cycle_start_time = time.time()
                 
-                logger.info(f"🔗 [调度] 抢单成功: {item_name} (ID: {brand_id}, 发起方: {server_ip})")
-                
-                # ==========================================================
-                # 🔥 [新增] 1. 全局缓存检查：别人找过了，我就直接“白嫖”
-                # ==========================================================
-                cached_result = check_global_cache(brand_id)
-                if cached_result:
-                    logger.info(f"✨ [秒回传] 命中全局缓存！无需弹窗抓取，直接为服务器 {server_ip} 复制结果")
-                    
-                    # 把缓存里的供应商数据合并进当前任务包
-                    assigned_task.update(cached_result)
-                    
-                    # 假装是自己刚抓完的，直接写回数据库，状态标为成功
-                    save_task_result(assigned_task, status='completed', custom_reason="系统自动复用全局同步缓存")
-                    
-                    # 发送完工信号给 05_AI 节点
-                    clear_retry_placeholder(brand_id, server_ip)
-                    
-                    logger.info(f"💤 缓存同步完毕，继续监听下一单...")
-                    continue # 👈 极其重要：直接跳回 while 循环开头，不执行下面的 process_whole_task！
+                try: 
+                    if hasattr(db_sync, 'run_sync_download'):
+                        db_sync.run_sync_download()
+                        if hasattr(db_sync, 'cleanup_local_retry_cache'):
+                            db_sync.cleanup_local_retry_cache()
+                        last_sync_time = time.time()
+                except: pass
 
-                # ==========================================================
-                # 2. 如果没缓存，才调用原有的浏览器矩阵去网页上硬抓
-                # ==========================================================
-                logger.info(f"🔎 未命中缓存，即将唤醒浏览器执行全网寻源...")
-                process_whole_task(assigned_task)
+            if len(running_futures) < MAX_WORKERS:
                 
-                logger.info(f"💤 任务处理完毕，继续监听队列...")
+                # ======================================================
+                
+                # 下面是你原本的代码，保持不变，作为优先级 2：
+                pending_candidates = get_pending_tasks() 
+                assigned_task = None
+                
+                for t in pending_candidates:
+                    bid = t.get('brand_id')
+                    if bid not in PROCESSING_BRAND_IDS:
+                        assigned_task = t
+                        break
+                
+                if assigned_task:
+                    brand_id = assigned_task.get('brand_id')
+                    PROCESSING_BRAND_IDS.add(brand_id)
+                    logger.info(f"🔗 [调度] 领单: {assigned_task['item_name']}")
+                    f = executor.submit(process_whole_task, assigned_task)
+                    running_futures.add(f)
+
+            if not running_futures:
+                # 触发云端同步，把数据拉下来
+                logger.info("📡 检查云端是否有新任务...")
+                try:
+                    if hasattr(db_sync, 'run_sync_download'):
+                        db_sync.run_sync_download()
+                        if hasattr(db_sync, 'cleanup_local_retry_cache'):
+                            db_sync.cleanup_local_retry_cache()
+                except Exception as e:
+                    logger.error(f"❌ 自动同步失败: {e}")
+                
+                # 同步完再次检查本地有没有【真正可用】的任务
+                pending_candidates = get_pending_tasks()
+                has_new_task = False
+                for t in pending_candidates:
+                    if t.get('brand_id') not in PROCESSING_BRAND_IDS:
+                        has_new_task = True
+                        break
+                        
+                if not has_new_task:
+                    logger.info("💤 本地和云端均无任务，爬虫挂起等待云端信号... (兜底巡检: 60分钟)")
+                    # 彻底阻塞，0耗能等待
+                    is_woken = cloud_event.wait(timeout=21600)
+                    if is_woken:
+                        logger.info("🎯 [极速响应] 收到云端发信，立刻唤醒爬虫！")
+                        cloud_event.clear()
+                continue
+            
+            done, not_done = wait(running_futures, return_when=FIRST_COMPLETED)
+            
+            for future in done:
+                running_futures.remove(future) 
+                try:
+                    completed_brand_id = future.result()
+                    if completed_brand_id in PROCESSING_BRAND_IDS:
+                        PROCESSING_BRAND_IDS.remove(completed_brand_id)
+
+                    if len(PROCESSING_BRAND_IDS) > 5000:
+                        PROCESSING_BRAND_IDS.clear()
+
+                except Exception as e:
+                    logger.error(f"❌ 任务回收异常: {e}")
 
         except Exception as e:
-            logger.error(f"💥 分布式主循环出错: {e}")
-            time.sleep(5)
+            logger.error(f"💥 主循环错误: {e}")
+            time.sleep(10)
 
 if __name__ == "__main__":
     run_infinite_loop()

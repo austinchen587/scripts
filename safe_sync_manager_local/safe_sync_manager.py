@@ -18,7 +18,7 @@ import os
 
 # 源数据库（局域网另一台电脑）
 SOURCE_DB = {
-    "host": "192.168.10.13",
+    "host": "121.41.128.53",
     "port": 5432,
     "database": "austinchen587_db",
     "user": "austinchen587",
@@ -28,7 +28,7 @@ SOURCE_DB = {
 
 # 目标数据库（本机）
 TARGET_DB = {
-    "host": "192.168.10.20",  # 如果localhost不行，用127.0.0.1
+    "host": "localhost",  # 如果localhost不行，用127.0.0.1
     "port": 5432,
     "database": "austinchen587_db", 
     "user": "austinchen587",

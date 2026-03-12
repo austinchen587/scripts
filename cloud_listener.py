@@ -5,7 +5,7 @@ import threading
 import time
 
 CLOUD_DB_CONFIG = {
-    'host': '121.41.76.252',
+    'host': '116.62.86.107',
     'port': '5432',
     'dbname': 'austinchen587_db',
     'user': 'austinchen587',

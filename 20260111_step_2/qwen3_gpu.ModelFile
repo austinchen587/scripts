@@ -1,0 +1,7 @@
+FROM qwen3:8b
+
+# GPU配置优化
+PARAMETER num_gpu 99        # 使用尽可能多的GPU层
+PARAMETER num_thread 0      # 自动决定线程数  
+PARAMETER num_ctx 4096      # 上下文长度
+PARAMETER temperature 0.1   # 稳定性优先

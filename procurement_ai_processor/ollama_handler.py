@@ -2,37 +2,67 @@ import requests
 import re
 import json
 import logging
+import time
 from typing import Dict, Any, Optional
-from config import OLLAMA_CONFIG
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+# ⚠️ [修改] 引入云端配置
+from config import CLOUD_LLM_CONFIG 
 
 logger = logging.getLogger(__name__)
 
 class OllamaHandler:
     def __init__(self):
-        self.base_url = OLLAMA_CONFIG["base_url"]
-        self.model = OLLAMA_CONFIG["model"]
-        self.timeout = OLLAMA_CONFIG["timeout"]
+        # ⚠️ [修改] 切换为云端配置
+        self.base_url = CLOUD_LLM_CONFIG["base_url"].strip().rstrip('/')
+        # 🔧 确保 base_url 包含完整路径
+        if not self.base_url.endswith('/chat/completions'):
+            self.base_url = f"{self.base_url}/chat/completions"
+            
+        self.model = CLOUD_LLM_CONFIG["model"]
+        self.api_key = CLOUD_LLM_CONFIG["api_key"]
+        self.timeout = CLOUD_LLM_CONFIG["timeout"]
+        # 🔧 缩短单次读取超时，让重试更快触发（避免 300×3=15分钟）
+        self.single_timeout = min(self.timeout, 90)
         self.session = self._create_session()
 
     def _create_session(self):
         session = requests.Session()
         session.trust_env = False
         session.proxies = {"http": None, "https": None}
+        
+        # 🔧 配置 Retry：支持超时/连接错误/5xx 重试
+        retry = Retry(
+            total=3,  # ✅ 最大重试 3 次
+            read=3,
+            connect=3,
+            backoff_factor=1.0,  # 指数退避: 1s, 2s, 4s
+            status_forcelist=(429, 500, 502, 503, 504),  # ✅ 增加 429 速率限制
+            allowed_methods=["POST", "GET"],  # ✅ 允许重试 POST
+            raise_on_status=False,  # ✅ 关键：允许重试非 200 状态
+            respect_retry_after_header=True,  # ✅ 尊重服务器的 Retry-After
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        
+        # ⚠️ [修改] 为云端 API 统一追加 Bearer Token 鉴权头
+        session.headers.update({
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        })
         return session
 
     def check_connection(self) -> bool:
-        try:
-            test_url = f"{self.base_url}/api/tags"
-            response = self.session.get(test_url, timeout=5)
-            return response.status_code == 200
-        except Exception as e:
-            logger.error(f"无法连接到Ollama服务: {e}")
+        # ⚠️ [修改] 云端接口无需 ping tags，直接校验 key 格式即可
+        if not self.api_key or "sk-" not in self.api_key:
+            logger.error("❌ 尚未配置有效的 API Key！")
             return False
+        return True
 
     def clean_text_artifacts(self, text: str) -> str:
         """清洗 Python 列表残留符号及花括号"""
         if not text: return ""
-        # [修改] 同时移除 [] {} 和引号
         cleaned = re.sub(r"[\[\]\{\}'\"']", "", str(text))
         return cleaned.strip()
 
@@ -56,7 +86,7 @@ class OllamaHandler:
             "设备", "材料", "管", "泵", "阀", "灯", "柜", "架", 
             "器", "机", "仪", "表", "电池", "车", "电脑", "纸", "本",
             "互感器", "变压器", "耗材", "硬盘", "内存", "家具", "桌", "椅",
-            "苗", "树", "被", "枕", "床", "油", "米", "面", "粮" # [新增] 粮油白名单
+            "苗", "树", "被", "枕", "床", "油", "米", "面", "粮"
         ]
         for white_word in whitelist:
             if white_word in item_clean: return True
@@ -92,34 +122,105 @@ class OllamaHandler:
         except Exception:
             return {"keyword": text[:25], "platform": "未知"}
 
-    def call_model(self, prompt: str) -> Optional[str]:
-        try:
-            url = f"{self.base_url}/api/generate"
-            data = {
-                "model": self.model, 
-                "prompt": prompt, 
-                "stream": False, 
-                # "format": "json", # ⚠️ [修改点1] 注释掉强制JSON格式，防止新模型不兼容报错
-                "options": {
-                    "temperature": 0.1,
-                    "num_predict": 256  # ⚠️ [修改点2] 稍微放大输出长度，防止截断
-                }
-            }
-            response = self.session.post(url, json=data, timeout=self.timeout)
-            
-            if response.status_code == 200:
-                return response.json().get("response", "").strip()
-            else:
-                # ⚠️ [修改点3] 把 Ollama 真实的报错原因打印到控制台！
-                print(f"\n❌ 警告: Ollama 拒绝了请求! 状态码: {response.status_code}, 详情: {response.text}")
-                return None
+    def call_model(self, prompt: str, max_retries: int = 3) -> Optional[str]:
+        """调用云端模型 - 支持重试 + 关闭思考"""
+        
+        # 🔧 构建 payload：enable_thinking 直接放顶层（阿里云兼容接口规范）
+        data = {
+            "model": self.model, 
+            "messages": [
+                {"role": "system", "content": "你是一个输出标准化JSON的机器。"},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": CLOUD_LLM_CONFIG.get("temperature", 0.1),
+            "response_format": {"type": "json_object"},
+            # ✅ 关键：关闭思考功能 - 直接放顶层！
+            "enable_thinking": False,
+        }
+        
+        # 🔁 手动重试循环（比 urllib3.Retry 更可控）
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"\n  [API 连线] 尝试 {attempt}/{max_retries} 呼叫 {self.model} ...")
+                print(f"  [API 配置] 单次超时: {self.single_timeout}s | 🧠思考: 关闭")
                 
-        except requests.exceptions.ReadTimeout:
-            print("\n❌ 警告: Ollama 处理超时！(可能模型加载太慢)")
-            return None
-        except Exception as e:
-            logger.error(f"调用Ollama出错: {e}")
-            return None
+                start_time = time.time()
+                
+                # 🔧 使用缩短后的单次超时
+                response = self.session.post(
+                    self.base_url, 
+                    json=data, 
+                    timeout=(10, self.single_timeout),  # (connect, read)
+                    headers=self.session.headers
+                )
+                
+                elapsed = time.time() - start_time
+                print(f"  [API 响应] 状态码: {response.status_code} | 耗时: {elapsed:.2f}s")
+                
+                # 🔧 处理 429 速率限制
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 5))
+                    print(f"  [API 限流] 等待 {retry_after}秒后重试...")
+                    time.sleep(retry_after)
+                    continue
+                
+                response.raise_for_status()
+                
+                result_text = response.json()["choices"][0]["message"]["content"].strip()
+                print(f"  [API 返回] 内容: {result_text[:200]}{'...' if len(result_text) > 200 else ''}")
+                return result_text
+                
+            except requests.exceptions.ReadTimeout:
+                last_error = f"读取超时 ({self.single_timeout}s)"
+                print(f"\n❌ 警告: 云端API读取超时！{last_error}")
+                
+            except requests.exceptions.ConnectTimeout:
+                last_error = "连接超时"
+                print(f"\n❌ 警告: 云端API连接超时！{last_error}")
+                
+            except requests.exceptions.ConnectionError as e:
+                last_error = f"连接错误: {e}"
+                print(f"\n❌ 警告: 网络连接失败！{last_error}")
+                
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if hasattr(e, 'response') else '未知'
+                last_error = f"HTTP {status} 错误"
+                print(f"\n❌ 警告: API 返回 {last_error}")
+                if hasattr(e, 'response') and e.response.text:
+                    try:
+                        err = e.response.json()
+                        print(f"  [错误详情] {err.get('error', {}).get('message', e.response.text[:100])}")
+                    except:
+                        print(f"  [错误详情] {e.response.text[:100]}")
+                # 5xx 错误可重试，4xx 通常不可重试
+                if status < 500:
+                    break
+                    
+            except json.JSONDecodeError as e:
+                print(f"\n❌ 错误: 响应解析失败 - {e}")
+                print(f"  [原始响应] {response.text[:200] if 'response' in locals() else 'N/A'}")
+                return None  # 解析错误通常不需要重试
+                
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
+                print(f"\n❌ 错误: 调用异常 - {last_error}")
+                logger.error(f"调用云端模型出错: {last_error}")
+                # 未知错误不重试，直接返回
+                return None
+            
+            # 🔁 指数退避等待后重试
+            if attempt < max_retries:
+                wait_time = 2 ** (attempt - 1)  # 1s, 2s, 4s
+                print(f"  [重试策略] {wait_time}秒后第 {attempt+1} 次尝试...")
+                time.sleep(wait_time)
+        
+        # 🔥 所有重试失败
+        print(f"\n💥 重试耗尽 ({max_retries}次)，最后错误: {last_error}")
+        with open("llm_api_error.log", "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 重试失败: {last_error}\n")
+        return None
+
     def process_commodity(self, item_name: str, suggested_brand: str = "", specifications: str = "", quantity: Any = None) -> Dict[str, Any]:
         """主处理逻辑"""
         result = {
@@ -146,58 +247,44 @@ class OllamaHandler:
             result["search_platform"] = "本地解析"
             return result
         
-        # --- 核心 Prompt 优化 (去数量化 + 多品牌分割 + 强化京东淘宝 + 实战错题本 + 主语防丢补丁) ---
-        prompt = f"""你是一个高级电商采购搜索专家。请分析商品数据：
+        # ⚠️ [终极进化版] 完美融合：反向SEO极简法则 + 核心参数强制提取思维链
+        prompt = f"""你是一个深谙淘宝、京东、1688底层搜索逻辑且具备极强专业采购背景的顶级电商买手。
+你的任务是将长篇大论的"政企采购需求"，精准翻译成能搜出【完全符合硬性参数要求】的电商搜索词。
+
+【原始采购数据】
 商品名称：{item_name}
 参考品牌：{suggested_brand if suggested_brand else '无'}
-规格描述：{self.clean_specifications(specifications)[:200]}
+规格描述：{self.clean_specifications(specifications)[:400]}
 采购数量：{quantity if quantity else '未知'}
 
-请完成以下任务并输出JSON：
+【🚨 核心参数提取与反向 SEO 法则（生死红线）】
+1. **精准抓取决定性参数**：你必须从规格中揪出那些【决定设备分类、大小、原理、价格量级】的核心物理参数！（如：118mm/热转印、i7/16G）。
+2. **纠正名词偏差**：如果需求写着"票据打印机"，但规格要求"118mm宽幅、热转印、装碳带"，你必须懂行，知道这在电商上叫"热转印标签打印机"！
+3. **只要骨干，拒绝赘肉**：电商搜索引擎极其愚蠢！最终搜索词**最多包含3-4个核心词汇**（修正后的名词 + 核心参数）。
+4. **绝对禁止的词汇**：
+   - 严禁出现任何包装数量（如：500张/包、4包/箱、10卷/提）。
+   - 严禁出现极其详细的琐碎尺寸（如：297*420mm -> 必须转换为电商通用词A3）。
+   - 严禁出现描述性废话（如：带检测报告、双面、不透明、加厚、预算控制、必须正品）。
 
-1. **提取搜索词 (keyword)**：
-   - **【禁止数量与无用词】**：**绝对不允许**出现数量词（如“30个”、“3件”、“50盒”、“1080支”）。禁止出现“白色”、“安全门锁”、“以上”等长串修饰语。
-   - **【基本格式】**：中文品牌(如有) + 商品名 + 核心型号/规格。
-   - **【多品牌与中英文过滤】**：如果包含多个品牌（如“联想/lenovo华为/huawei”或“得力/deli晨光/m&g”），**只保留纯中文品牌名**，并为**每个品牌分别生成**独立搜索词，必须用双竖线 `||` 拼接。示例：`联想 笔记本||华为 笔记本`。**绝对不要在最终结果里保留 `/` 符号**。
-   - **【电脑类强制规则】**：“便携式计算机”必须转换成“笔记本”。必须包含 CPU、内存、硬盘。简写形式：16GB->16G，1TB SSD->1T。
-   - **【核心主语强制保留】（极其重要）**：无论规格多么详细，**最终的搜索词中必须包含原本的“商品名称”**！绝对不允许只提炼规格而把商品本身的名字弄丢。
-   - **防串扰**：若商品名与规格矛盾，以规格为准。
+【平台智能路由法则】
+- 【京东】：数码电器、办公高价值设备、对参数要求极度严格的工业品。必须精确包含核心参数！
+- 【1688】：当采购数量巨大（>100）且带有明显定制属性或工业耗材批发时，必须选1688。
+- 【淘宝】：日杂百货、五金劳保、零碎耗材。
 
-2. **推荐平台 (platform)**（仅在京东、淘宝、1688中选择）：
-   - **京东**：电脑数码、标准电器（冷柜等）、图书、办公耗材及设备（打印机/硒鼓/中性笔/复印纸）。
-   - **淘宝**：日用消耗品（垃圾袋/指甲剪/马桶刷）、五金零配件（胶水/胶条）、体育及手工材料（实验耗材/漆包线）、冷门长尾商品。
-   - **1688**：仅限源头定制、大型工业材料。
+【翻译实战案例】
+[输入]: 针式打印机 进纸宽度≥118mm 热敏/热转印 碳带装载量≥300m
+[思考]: 宽幅118+热转印+碳带，这是典型的工业桌面标签打印机。不能只搜"票据打印机"否则全是58mm外卖机。
+[输出]: {{"core_params": "118mm 热转印", "keyword": "热转印标签打印机 118mm", "platform": "京东"}}
 
-【极其重要的输出示例】（请严格模仿以下案例的思维生成 keyword）：
+[输入]: A3多功能复印纸（A3 80g 双面复印纸500张/包、4包/箱 297*420mm）
+[思考]: A3和80g是核心参数，500张是废话，297*420mm需转为A3。
+[输出]: {{"core_params": "A3 80g", "keyword": "A3复印纸 80g", "platform": "京东"}}
 
-示例 1：过滤多品牌英文别名 + 计算机术语转换（必须用||分割）！
-输入 -> 商品名称: 便携式计算机, 规格描述: 内存32;CPU:Ultra 9;硬盘:1T SSD;颜色:灰, 参考品牌: 联想/lenovo华为/huawei
-生成 -> "keyword": "联想 笔记本 Ultra9 32G 1T||华为 笔记本 Ultra9 32G 1T"
-（错误示范：联想/lenovo便携式计算机... —— 绝对不能保留英文和斜杠！）
-
-示例 2：文具类多品牌完美分割 + 过滤数量！
-输入 -> 商品名称: 黑笔(中性笔), 规格描述: 晨光/得力 0.5mm, 采购数量: 1080支, 参考品牌: 得力/deli晨光/m&g
-生成 -> "keyword": "得力 0.5mm 中性笔||晨光 0.5mm 中性笔"
-（错误示范：得力/晨光0.5mm中性笔 —— 绝对不能保留斜杠，必须用||切开！）
-
-示例 3：强力过滤纯数字与数量词！
-输入 -> 商品名称: 透明盛液筒, 规格描述: 无, 采购数量: 30个, 参考品牌: 无
-生成 -> "keyword": "透明盛液筒"
-（错误示范：透明盛液筒30个 —— 绝对不能带任何数量！）
-
-示例 4：过滤电商废话属性，提取核心！
-输入 -> 商品名称: 冰柜, 规格描述: 白色;有效容积:≥200L;立式;安全门锁, 参考品牌: 海尔/Haier美的星星澳柯玛/aucma
-生成 -> "keyword": "海尔 立式冰柜 200L||美的 立式冰柜 200L||星星 立式冰柜 200L||澳柯玛 立式冰柜 200L"
-
-示例 5：主语强制保留防丢失！
-输入 -> 商品名称: 马桶刷, 规格描述: 长柄圆刷, 采购数量: 10个, 参考品牌: 无
-生成 -> "keyword": "马桶刷 长柄圆刷"
-（错误示范：长柄圆刷 —— 绝对不能丢掉真正的商品名“马桶刷”！）
-
-请最终输出合法的JSON格式：
+请基于以上法则，严格输出JSON格式：
 {{
-    "keyword": "提取出的搜索词",
-    "platform": "推荐的平台"
+    "core_params": "你提取的决定性核心参数（不超过3个词）",
+    "keyword": "最精简、最精准的电商搜索词",
+    "platform": "京东/淘宝/1688"
 }}
 """
         ai_response = self.call_model(prompt)

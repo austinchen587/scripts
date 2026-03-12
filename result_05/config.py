@@ -2,11 +2,19 @@ import os
 
 # 数据库配置
 DB_CONFIG = {
-    'host': 'localhost',
+    'host': '121.43.77.214',
     'port': 5432,
     'dbname': 'austinchen587_db',
     'user': 'austinchen587',
     'password': 'austinchen587'
+}
+
+# 2. 新增云端 Redis 配置
+REDIS_CONFIG = {
+    'host': '121.43.77.214', 
+    'port': 6379,
+    'password': 'austinchen587', 
+    'decode_responses': True
 }
 
 # 表名配置
@@ -21,6 +29,15 @@ OLLAMA_CONFIG = {
     "base_url": "http://127.0.0.1:11434",
     "model": "qwen2.5:7b-instruct-q4_K_M",
     "timeout": 120, # 单次请求超时
+    "temperature": 0.1
+}
+
+# 👉 [新增] 纯文本云端大模型 API 配置
+CLOUD_LLM_CONFIG = {
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "model": "qwen-plus",  # 直接换上这个性价比神机！
+    "api_key": "sk-7725072c412d4f4280d091a92772dda1", # 你的真实 API KEY
+    "timeout": 300,
     "temperature": 0.1
 }
 

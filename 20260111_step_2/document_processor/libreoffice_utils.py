@@ -15,7 +15,7 @@ def office_to_pdf(input_path: Path) -> Path:
         "--outdir", str(input_path.parent),
         str(input_path)
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0 or not output_pdf.exists():
         raise RuntimeError(f"LibreOffice 转换失败: {result.stderr}")
     return output_pdf

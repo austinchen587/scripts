@@ -28,7 +28,7 @@ class DatabaseSyncer:
     def __init__(self):
         # 云端数据库配置
         self.cloud_config = {
-            'host': '121.41.76.252',
+            'host': '116.62.86.107',
             'port': '5432',
             'database': 'austinchen587_db',
             'user': 'austinchen587',

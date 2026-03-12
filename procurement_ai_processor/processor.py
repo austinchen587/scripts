@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 from config import APP_CONFIG
 from database import DatabaseManager
 from ollama_handler import OllamaHandler
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,14 @@ class BrandProcessor:
     def process_batch(self, batch: List[Dict]) -> int:
         results_to_insert = []
         print(f"\n{'─' * 60}")
-        print(f"📦 处理批次: {len(batch)} 条")
+        print(f"📦 处理批次: {len(batch)} 条 (🚀 已开启多线程并发加速)")
         
-        for index, item in enumerate(batch, 1):
+        # 1. 定义单条数据的处理逻辑（相当于流水线上的单个工人）
+        def worker(index, item):
             try:
                 quantity = item.get('quantity')
-                result = self.ollama.process_commodity(
+                result = self.retry_call(
+                    self.ollama.process_commodity,
                     item_name=item['item_name'],
                     suggested_brand=item['suggested_brand'],
                     specifications=item['specifications'],
@@ -66,31 +69,42 @@ class BrandProcessor:
                 key_word = ""
                 platform = ""
                 
-                if not result.get('is_product'):
-                    pass 
-                else:
+                if result.get('is_product'):
                     key_word = result.get('key_word', '') or result.get('commodity_summary', item['item_name'])
                     platform = result.get('search_platform', '未知')
                 
-                if not key_word: continue
+                if not key_word: return None
                 
-                print(f"  [{index}] {item['item_name'][:10]}... -> 🔍 {key_word[:20]:<20} | 🛒 {platform}")
+                print(f"  [并发-{index}] {item['item_name'][:10]}... -> 🔍 {key_word[:20]:<20} | 🛒 {platform}")
 
                 item_to_save = item.copy()
                 item_to_save['key_word'] = key_word
                 item_to_save['search_platform'] = platform
-                results_to_insert.append(item_to_save)
+                return item_to_save
                 
             except Exception as e:
                 logger.error(f"处理出错 (ID: {item.get('procurement_id')}): {e}")
-                continue
+                print(f"  ❌ [并发-{index}] {item['item_name'][:10]}... 处理失败: {e}")
+                return None
+
+        # 2. 启动线程池进行并发请求！
+        # ⚠️ 这里的 max_workers 就是并发数，建议设为 5~10
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            # 将任务分配给线程池
+            futures = [executor.submit(worker, i, item) for i, item in enumerate(batch, 1)]
+            
+            # 收集每个线程的处理结果
+            for future in as_completed(futures):
+                res = future.result()
+                if res:
+                    results_to_insert.append(res)
         
+        # 3. 收集完并发结果后，依然是一次性批量存入数据库（保护数据库连接）
         if results_to_insert:
             try:
                 print(f"  💾 正在批量保存 {len(results_to_insert)} 条...")
                 count = self.retry_call(self.db.batch_insert_brand_data, results_to_insert)
                 self.processed_count += count
-                # [关键] 入库成功后，实时更新内存中的去重集合，防止同批次重复
                 for res in results_to_insert:
                     self.existing_items.add((res['procurement_id'], res['item_name']))
                     

@@ -6,10 +6,10 @@ from data_filter import clean_and_filter_candidates
 from llm_api import invoke_ollama
 from config import OLLAMA_CONFIG
 from logger import logger
-from llm_api import invoke_ollama, analyze_image_with_vl # 确保把 analyze_image_with_vl 导进来
+
 
 def get_gaussian_samples(items, n_samples=5):
-    """
+    """ 
     基于正态分布(高斯分布)的抽样策略
     目标：选取能代表 95% 置信区间 (Mean ± 1.96σ) 的样本点
     """
@@ -70,69 +70,54 @@ def get_gaussian_samples(items, n_samples=5):
 
 def build_tier_selection_prompt(demand, tiers):
     """
-    构建【价格段选择】Prompt - 修正版
-    核心逻辑：先看规格是否匹配，再看价格。
+    【终极防骗版】构建价格段选择 Prompt
+    强制引入核心参数提取与组内样本核对
     """
     summary = []
     for tier_name, items in tiers.items():
         if not items: continue
-        
-        # 使用高斯抽样获取代表性样本
         samples = get_gaussian_samples(items, 5)
-        
         avg_p = sum(x['price'] for x in items) / len(items)
-        
-        # 构建样本描述
-        sample_desc = []
-        for x in samples:
-            # 加入店铺名辅助判断（有些店铺名带"配件"）
-            sample_desc.append(f"- [￥{x['price']}] {x['title'][:50]}")
-            
-        sample_text = "\n".join(sample_desc)
-        
+        sample_desc = [f"- [￥{x['price']}] {x['title'][:50]}" for x in samples]
         summary.append({
             "tier": tier_name,
             "stat_info": f"均价 ￥{avg_p:.1f} (共{len(items)}家)",
-            "gaussian_samples": sample_text
+            "gaussian_samples": "\n".join(sample_desc)
         })
         
     specs = demand.get('specifications')
     if not specs or str(specs).lower() == 'nan':
         specs = "无特殊硬性规格"
 
-    # 关键修改：重写思考步骤，强制先做规格对齐
     return f"""
-    我是采购员，需购买：【{demand.get('item_name')}】
-    【硬性规格要求】：{specs}
+    我是国家级政企采购审计员，需购买：【{demand.get('item_name')}】
+    【硬性规格红线】：{specs}
     
-    我按价格将市场商品分为了几组。请根据每组的【正态分布代表性样本】，判断哪个组**真正符合规格要求**。
+    我已经按价格将市场商品分为了几组，并提取了每组的正态分布代表性样本。请帮我找出【真实符合参数】且【性价比最高】的组。
     
     【分组详情】:
     {json.dumps(summary, ensure_ascii=False, indent=2)}
     
-    【决策逻辑】(必须严格执行步骤 1)
-    1. **规格对齐检验 (Spec Check)**：
-       - 仔细阅读【需求规格】中的尺寸、容量、材质、型号等关键参数。
-       - 逐一检查各组的【代表性样本】标题。
-       - **淘汰**那些样本标题明显与需求规格不符的组。
-       - *例如：需求要“大号/50cm”，如果“低价组”样本全是“小号/30cm”或“配件”，必须淘汰“低价组”！*
-       - *例如：需求要“整箱”，如果某组样本是“单只体验装”，必须淘汰该组！*
+    【审计流程】(必须严格按顺序执行)
+    1. **核心参数提取 (Step 1)**：从【硬性规格红线】中，提取出最具决定性的2-3个物理参数（如118mm、热转印、i7处理器等）。
+    2. **组内抽检 (Step 2)**：
+       - 拿着这几个核心参数，去审查每一组的【gaussian_samples】标题。
+       - 只要该组有超过半数的样本标题与核心参数**明显冲突**（例如：需求要118mm，样本全是58mm；需求要整机，样本全是配件/耗材），**必须果断枪毙该组**！决不能因为便宜而放行！
+    3. **最终决断 (Step 3)**：
+       - 在所有**未被枪毙（存活）**的组中，选择价格最低的一组。
+       - 如果所有组都被枪毙，输出 "none"。
     
-    2. **选择最佳组**：
-       - 在**符合规格**的组中，选择价格最低的组。
-       - 如果“低价组”符合规格，首选“低价组”。
-       - 如果“低价组”规格不符（如尺寸不对、仅为配件），则顺位检查“中价组”。
-    
-    请输出JSON:
+    请严格输出JSON:
     {{
-        "spec_analysis": "分析需求关键参数是[X]。低价组样本显示为[Y]，是否匹配？中价组样本显示为[Z]...",
-        "best_tier": "low / mid / high",
-        "reason": "虽然低价组便宜，但其样本多为[X]与需求[Y]不符，因此选择规格匹配且价格合理的[Z]组..."
+        "step1_core_params": "我提取的核心决定性参数是：[X]、[Y]",
+        "step2_tier_audit": "低价组样本核对：[通过/淘汰]，理由是样本多为[XX]；中价组：[通过/淘汰]...；高价组：[通过/淘汰]...",
+        "best_tier": "low / mid / high / none",
+        "reason": "综合审计结论"
     }}
     """
 
 def select_best_tier(demand, tiers):
-    """调用LLM选择最佳价格段"""
+    """调用LLM选择最佳价格段 (支持全军覆没拦截)"""
     if len(tiers) == 1:
         return list(tiers.keys())[0]
         
@@ -145,6 +130,11 @@ def select_best_tier(demand, tiers):
         
         logger.info(f"🤖 AI 决策理由: {reason}")
         
+        # 👉 [新增] 处理全军覆没的情况
+        if 'none' in chosen:
+            logger.warning("🚫 AI 审计判定：所有分组的代表性样本均不符合核心参数要求！")
+            return 'none'
+            
         if 'low' in chosen: return 'low'
         if 'mid' in chosen: return 'mid'
         if 'high' in chosen: return 'high'
@@ -275,6 +265,14 @@ def tournament_selection(demand, candidates):
     else:
         # 3. 多组数据，让 AI 选一组
         best_tier_name = select_best_tier(demand, tiered_pool)
+        
+        # 👉 [新增] 触发了全部组均被枪毙的极端防线
+        if best_tier_name == 'none':
+            return {
+                "selected": [], 
+                "overall_reasoning": "系统判定：所有候选价格组内的代表性商品，均不符合您的核心参数要求（如尺寸、规格等），存在严重货不对板风险，建议修改采购词重新寻源。"
+            }
+            
         current_pool = tiered_pool.get(best_tier_name, [])
         logger.info(f"AI 选择了价格段: [{best_tier_name}]，该组共 {len(current_pool)} 家参与后续PK")
         
@@ -300,18 +298,6 @@ def tournament_selection(demand, candidates):
         round_num += 1
         if not current_pool: return None
 
-    # ============================================================
-    # 👉 [漏斗截断] 检查留下来的优胜者是否已经抓过详情了？
-    # ============================================================
-    all_ready = all(c.get('fetch_status', 0) == 2 for c in current_pool)
-    if not all_ready:
-        logger.info(f"⏸️ 发现 Top {len(current_pool)} 候选人尚未获取详情，中断 AI 决赛，挂起并呼叫爬虫...")
-        return {
-            "status": "need_detail", 
-            "skus": [c['sku'] for c in current_pool]
-        }
-    # ============================================================
-
     logger.info(f"--- 终极决选 (剩余: {len(current_pool)}家) ---")
 
     # ============================================================
@@ -321,35 +307,9 @@ def tournament_selection(demand, candidates):
     target_specs = str(demand.get('specifications', ''))
     target_keywords = [k for k in target_specs.replace(';',' ').replace(',',' ').split() if len(k)>1]
 
+    # 因为是列表页盲狙，我们直接用列表页标题作为 final_specs_text
     for c in current_pool:
-        detail_json_str = c.get('detail_specs')
-        c['final_specs_text'] = "无有效参数"
-        
-        if detail_json_str:
-            try:
-                specs_data = json.loads(detail_json_str)
-                page_text = specs_data.get('text', '')
-                img_path = specs_data.get('image_path', '')
-
-                # 1. 检查文本是否缺失了我们要找的核心型号信息
-                text_missing_key_info = False
-                if target_keywords and page_text:
-                    # 统计文本中命中了多少个需求关键词
-                    match_count = sum(1 for k in target_keywords if k.upper() in page_text.upper())
-                    # 如果连一个核心词（比如型号）都没在网页文本里找到，说明文本是废话/兜底文案！
-                    if match_count == 0:
-                        text_missing_key_info = True
-
-                # 2. 【终极判断】：如果没有图、或者文本包含了“未提取到”、或者字数极少、或者【缺失核心型号】，全都要看图！
-                if img_path and ("未提取到" in page_text or len(page_text) < 30 or text_missing_key_info):
-                    logger.info(f"👁️ 发现 [{c['sku']}] 网页纯文本中未包含目标型号信息，正在召唤 Qwen3-VL 识图分析...")
-                    vl_text = analyze_image_with_vl(img_path, demand.get('item_name'))
-                    c['final_specs_text'] = f"{page_text}\n【Qwen3-VL 读图提取参数】:\n{vl_text}"
-                    logger.info(f"   ✅ 图文解析完毕！")
-                else:
-                    c['final_specs_text'] = page_text # 文本里明确写了我们要的型号，直接用，不浪费算力
-            except Exception as e:
-                c['final_specs_text'] = str(detail_json_str)
+        c['final_specs_text'] = c.get('title', '未知标题')
     # ============================================================
 
 

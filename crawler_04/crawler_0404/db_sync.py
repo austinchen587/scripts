@@ -9,7 +9,7 @@ from logger_helper import logger
 
 # 1. 下载任务源 (云端)
 CLOUD_DB_CONFIG = {
-    "host": "121.41.128.53",
+    "host": "127.0.0.1",
     "port": "5432",
     "dbname": "austinchen587_db",
     "user": "austinchen587",

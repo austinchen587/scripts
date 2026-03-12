@@ -4,7 +4,7 @@ import os
 # ==============================================================================
 # 1. 核心路径配置
 # ==============================================================================
-BASE_DIR = r'D:\code\project\scripts\crawler_04\crawler_0403'
+BASE_DIR = r'D:\code\project\scripts\crawler_04\crawler_0404'
 
 if not os.path.exists(BASE_DIR):
     raise Exception(f"❌ 严重错误：找不到项目根目录 {BASE_DIR}")
@@ -33,25 +33,12 @@ BROWSER_ADDRESS = '127.0.0.1:9222'
 # ==============================================================================
 # 4. 数据库配置
 # ==============================================================================
-
-# 1. 🔥 [新增] 云端 Redis 配置 (用于抢占任务)
-REDIS_CONFIG = {
-    'host': '121.43.77.214', 
-    'port': 6379,
-    'password': 'austinchen587', 
-    'decode_responses': True
-}
-
-
-
-# 2. ⚡ [修改] 云端数据库配置 (直连云端 PostgreSQL 18)
 DB_CONFIG = {
     "dbname": "austinchen587_db",
     "user": "austinchen587",
-    "password": "austinchen587", # 填入你创建 psql 用户时设的密码
-    "host": "121.43.77.214", 
-    "port": 5432,
-    "connect_timeout": 10
+    "password": "austinchen587",
+    "host": "localhost",
+    "port": 5432
 }
 
 print(f"✅ [Config] 项目根目录: {BASE_DIR}")

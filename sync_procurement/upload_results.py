@@ -25,17 +25,8 @@ class ResultUploader:
         # [核心修改] 将单个云端配置改为配置列表，支持多服务器同步
         self.cloud_configs = [
             {
-                'name': '服务器A (76.252)',
-                'host': '121.41.76.252',
-                'port': '5432',
-                'database': 'austinchen587_db',
-                'user': 'austinchen587',
-                'password': 'austinchen587',
-                'connect_timeout': 10
-            },
-            {
-                'name': '服务器B (128.53)',
-                'host': '121.41.128.53',
+                'name': '服务器A (localhost)',
+                'host': 'localhost',
                 'port': '5432',
                 'database': 'austinchen587_db',
                 'user': 'austinchen587',
@@ -179,7 +170,7 @@ class ResultUploader:
                 self.upload_table(cloud_config, 'procurement_emall_category', 'record_id')
                 
                 # 2. 同步 Step 2 的商品解析中间结果
-                self.upload_table(cloud_config, 'procurement_commodity_category', 'id')
+                self.upload_table(cloud_config, 'procurement_commodity_category', 'procurement_id')
                 
                 # 3. 同步 Step 3 的品牌/平台最终结果
                 self.upload_table(cloud_config, 'procurement_commodity_brand', 'id')
