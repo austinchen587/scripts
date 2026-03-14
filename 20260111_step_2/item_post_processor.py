@@ -24,34 +24,10 @@ def post_process_items(items, procurement_type):
         if processed_item.get("商品名称"):
             processed_items.append(processed_item)
     
-    # 根据采购类型进行后续处理
-    if procurement_type == "goods":
-        processed_items = split_combined_items(processed_items)
-    
+    # 【修复】：由于我们在大模型Prompt中已经严格要求合并参数，
+    # 绝对不能再按分号(;)进行拆分，直接返回大模型吐出的原始对象数组！
     return processed_items
 
-def split_combined_items(items):
-    """拆分合并的商品项"""
-    split_items = []
-    
-    for item in items:
-        name = item.get("商品名称", "")
-        specs = item.get("规格型号", "")
-        
-        # 检测是否包含多个商品
-        if "；" in specs or "、" in name:
-            # 尝试按分号拆分规格
-            spec_parts = [part.strip() for part in specs.split("；") if part.strip()]
-            if len(spec_parts) > 1:
-                for i, spec in enumerate(spec_parts):
-                    new_item = item.copy()
-                    new_item["规格型号"] = spec
-                    if i < len(spec_parts):
-                        new_item["商品名称"] = f"{name}_{i+1}"
-                    split_items.append(new_item)
-            else:
-                split_items.append(item)
-        else:
-            split_items.append(item)
-    
-    return split_items
+# 删除了原来那个坑爹的 split_combined_items 函数
+
+

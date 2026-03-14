@@ -21,91 +21,54 @@ class OfficeImageExtractor:
         self.MAX_IMAGE_PROCESS_TIME = 21600
     
     def extract_from_docx(self, file_path: Path, project_name: str = "") -> str:
-        """从Word文档中提取文字和图片文字"""
+        """从Word文档中【仅提取图片文字】，不提取原生文本以防套娃重复"""
         try:
             if self.debug:
                 print(f"[IMAGE-EXTRACT] 🖼️ 处理Word文档: {file_path.name}")
             
-            # 1. 使用python-docx提取文字
-            text_content = self._extract_docx_text(file_path)
-            
-            # 2. 提取嵌入的图片并识别
+            # 仅提取嵌入的图片并识别 (删除了原生文字提取)
             image_texts = self._extract_docx_images(file_path, project_name)
             
-            # 合并结果
             if image_texts:
-                text_content += "\n\n--- 图片提取内容 ---\n" + "\n".join(image_texts)
-            
-            return text_content
+                return "\n".join(image_texts)
+            return ""
             
         except Exception as e:
-            print(f"[IMAGE-EXTRACT] ⚠️ 提取Word文档失败: {e}")
+            print(f"[IMAGE-EXTRACT] ⚠️ 提取Word文档图片失败: {e}")
             return ""
     
     def extract_from_xlsx(self, file_path: Path, project_name: str = "") -> str:
-        """从Excel文档中提取文字和图片文字"""
+        """从Excel文档中【仅提取图片文字】"""
         try:
             if self.debug:
                 print(f"[IMAGE-EXTRACT] 📊 处理Excel文档: {file_path.name}")
             
-            # 1. 使用openpyxl提取单元格文字
-            text_content = self._extract_xlsx_text(file_path)
-            
-            # 2. 尝试提取嵌入图片（Excel中的图片处理较复杂）
+            # 仅提取嵌入图片 (删除了原生文字提取)
             image_texts = self._extract_xlsx_images(file_path, project_name)
             
             if image_texts:
-                text_content += "\n\n--- 图片提取内容 ---\n" + "\n".join(image_texts)
-            
-            return text_content
+                return "\n".join(image_texts)
+            return ""
             
         except Exception as e:
-            print(f"[IMAGE-EXTRACT] ⚠️ 提取Excel文档失败: {e}")
+            print(f"[IMAGE-EXTRACT] ⚠️ 提取Excel文档图片失败: {e}")
             return ""
         
     def extract_from_pdf(self, file_path: Path, project_name: str = "") -> str:
-        """从PDF文档中提取文字和图片文字"""
+        """从PDF文档中【仅提取图片文字】"""
         try:
             if self.debug:
                 print(f"[IMAGE-EXTRACT] 📄 处理PDF文档: {file_path.name}")
             
-            # 1. 首先尝试原生文字提取
-            try:
-                import pdfplumber
-                with pdfplumber.open(file_path) as pdf:
-                    text_content = ""
-                    for page in pdf.pages:
-                        text = page.extract_text()
-                        if text:
-                            text_content += text + "\n"
-                
-                if text_content and len(text_content) > 50:
-                    if self.debug:
-                        print(f"[IMAGE-EXTRACT] ✅ 获取原生PDF文字: {len(text_content)}字符")
-            except Exception as e:
-                if self.debug:
-                    print(f"[IMAGE-EXTRACT] ⚠️ 原生PDF提取失败: {e}")
-                text_content = ""
-            
-            # 2. 提取PDF中的图片并识别
+            # 仅提取PDF中的图片并识别 (删除了原生文字提取)
             image_texts = self._extract_pdf_images(file_path, project_name)
             
-            # 合并结果
             if image_texts:
-                if text_content:
-                    text_content += "\n\n--- 图片提取内容 ---\n"
-                else:
-                    text_content = "--- 图片提取内容 ---\n"
-                text_content += "\n".join(image_texts)
-            
-            # 3. 如果还是没有内容，直接返回空
-            if not text_content or len(text_content.strip()) < 10:
-                return ""
-                
-            return text_content
+                return "\n".join(image_texts)
+            return ""
             
         except Exception as e:
-            print(f"[IMAGE-EXTRACT] 💥 提取PDF文档失败: {e}")
+            print(f"[IMAGE-EXTRACT] 💥 提取PDF文档图片失败: {e}")
             return ""
     
     def _extract_pdf_images(self, file_path: Path, project_name: str) -> List[str]:

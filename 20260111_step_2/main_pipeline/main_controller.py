@@ -170,29 +170,47 @@ class MainController:
                     similar_cases = get_similar_cases(requirement_text, min_similarity_threshold=0.3)
                     print(f"[RAG] 🔍 检索到 {len(similar_cases)} 个案例")
                     
-                    # 构建提示词
-                    enhanced_items = enhance_with_attachment(db_items, full_attachment_text)
-                    prompt = build_enhanced_prompt(enhanced_items, full_attachment_text, similar_cases, doc_type)
+                    # 1. 原始数据直传大模型，让AI作为最高法官进行综合裁决
+                    # 注意：直接传 db_items，不再经过 enhance_with_attachment 预处理造成干扰
+                    prompt = build_enhanced_prompt(db_items, full_attachment_text, similar_cases, doc_type)
                     
-                    # 调用LLM
+                    # 2. 调用 LLM
                     llm_response = call_qwen3(prompt)
                     
                     if llm_response and llm_response.strip():
                         print(f"[LLM] 🤖 LLM返回长度: {len(llm_response)} 字符")
                         
+                        # 3. 解析大模型裁决的最终结果
                         llm_items = parse_llm_output(llm_response)
-                        print(f"[LLM] 🔄 解析出 {len(llm_items)} 个LLM项目")
+                        print(f"[LLM] 🧠 AI 综合裁决完毕，最终确认 {len(llm_items)} 个入库商品！")
                         
                         try:
+                            # 保留纯文本增强提取（如果有必要的话）
                             enhanced_llm_items = enhance_commodity_extraction(llm_items, full_attachment_text)
                             llm_items = enhanced_llm_items
                         except Exception as e:
                             print(f"[ENHANCE] ⚠️ 商品提取增强失败: {e}")
                         
-                        final_items = self._merge_llm_db_items(llm_items, enhanced_items)
+                        # 4. 【核心变动】废弃 self._merge_llm_db_items！
+                        # 相信大模型的合并结果，直接作为最终结果。
+                        final_items = llm_items
                         llm_output = llm_response[:2000]
+                        
+                        # 5. 标准化字段
                         final_items = post_process_items(final_items, doc_type)
-                        print(f"[POST] ✅ 后处理完成，共 {len(final_items)} 项")
+
+                        # 👇👇👇 【新增这段代码】：给纯净的业务数据，盖上数据库的“身份证钢印” 👇👇👇
+                        if final_items and len(db_items) > 0:
+                            base_meta = db_items[0]  # 取原数据库的第一条记录作为元数据模板
+                            for item in final_items:
+                                # 强制把数据库的追踪 ID 补回去！
+                                item["procurement_id"] = base_meta.get("procurement_id", "")
+                                item["project_number"] = base_meta.get("project_number", "")
+                                item["project_name"] = base_meta.get("project_name", "")
+                                item["procurement_type"] = base_meta.get("procurement_type", doc_type)
+                                item["commodity_category"] = base_meta.get("commodity_category", "")
+                        # 👆👆👆 新增结束 👆👆👆
+                        print(f"[POST] ✅ 字段标准化完成，共 {len(final_items)} 项")
                     else:
                         print(f"[LLM] ⚠️ LLM返回空结果，使用DB解析")
                         llm_output = "LLM返回空结果"

@@ -233,7 +233,16 @@ def download_file(url: str, project_name: str = "") -> Union[str, None]:
             print(f"🔄 文件已存在（基于URL去重）: {os.path.basename(existing_file)}")
             return existing_file
         
-        resp = requests.get(url, headers=REQUEST_HEADERS, timeout=30)
+        # 👇【修复】：动态处理防盗链 Referer
+        headers = REQUEST_HEADERS.copy()
+        
+        # 如果是第三方OSS或贵州/其他省份的链接，清空/修改 Referer 防止 403 跨站防盗链
+        if "jxemall.com" not in url:
+            # 删掉假装江西的 Referer，以空 Referer 身份直接请求（相当于浏览器直接复制粘贴）
+            headers.pop("Referer", None) 
+            
+        # 发起请求，使用动态生成的 headers
+        resp = requests.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
 
         # 检查内容类型，如果不是有效文件类型则跳过

@@ -50,7 +50,7 @@ def select_best_tier(demand, tiered_pool):
     return 'mid' if 'mid' in tiered_pool else list(tiered_pool.keys())[0]
 
 def call_ollama_batch(demand, batch_candidates, round_num, batch_idx):
-    prompt = build_batch_prompt(demand, batch_candidates)
+    prompt = build_batch_prompt(demand, batch_candidates, round_num, batch_idx)
     desc = f"R{round_num}-B{batch_idx}"
     
     result = invoke_ollama(prompt, desc)

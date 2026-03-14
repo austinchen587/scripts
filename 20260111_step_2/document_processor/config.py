@@ -11,7 +11,7 @@ def _get_platform_paths():
     if os.name == 'nt':  # Windows
         # Windows路径配置
         libreoffice_path = r"D:\libreoffice\program\soffice.exe"
-        poppler_bin_path = r"D:\poppler-25.12.0\Library\bin"
+        poppler_bin_path = r"D:\poppler-25.12.0\poppler-25.12.0\Library\bin"
         
         # 验证路径存在
         if not os.path.exists(libreoffice_path):

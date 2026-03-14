@@ -5,7 +5,7 @@ from logger import logger
 
 def fetch_single_task(brand_id):
     """
-    👉 [正规军架构] 根据 Redis 传来的 brand_id，查询云端已同步的 brand 表和 sku 表
+    👉 获取全量字段数据，为 AI 提供充足的算账依据和商务风险评估依据
     """
     conn = get_connection()
     if not conn: return None
@@ -13,24 +13,22 @@ def fetch_single_task(brand_id):
     group = None
     try:
         with conn.cursor() as cur:
-            # 1. 放心大胆地查 demand 表 (Django 已经帮我们把规格同步过来了)
-            sql_demand = f"""
-                SELECT procurement_id, item_name, specifications 
-                FROM {TABLES['brand']}
-                WHERE id = %s
-            """
+            # 动态获取全量列数据
+            sql_demand = f"SELECT * FROM {TABLES['brand']} WHERE id = %s"
             cur.execute(sql_demand, (brand_id,))
-            d = cur.fetchone()
+            d_row = cur.fetchone()
             
-            if not d:
+            if not d_row:
                 logger.warning(f"云端找不到 brand_id={brand_id} 的需求记录。")
                 return None
                 
-            pid = str(d[0])
-            demand_item_name = str(d[1])
-            specs = str(d[2]) if d[2] else ""
-
-            # 2. 查询对应的 SKU
+            # 组合成字典，包含所有的 notes, business_reqs, price_display 等
+            columns = [col[0] for col in cur.description]
+            demand_data = dict(zip(columns, d_row))
+            
+            pid = str(demand_data.get('procurement_id', ''))
+            
+            # 查询对应的 SKU
             sql_sku = f"""
                 SELECT procurement_id, sku, title, price, shop_name, sales, hot_info, detail_url, platform
                 FROM {TABLES['sku']}
@@ -51,13 +49,10 @@ def fetch_single_task(brand_id):
             group = {
                 'brand_id': brand_id,
                 'procurement_id': pid,
-                'demand': {
-                    'item_name': demand_item_name,
-                    'specifications': specs
-                },
+                'demand': demand_data,
                 'candidates': cands
             }
-                
+
     except Exception as e:
         logger.error(f"数据加载出错: {e}")
     finally:

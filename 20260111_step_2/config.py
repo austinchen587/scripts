@@ -32,7 +32,7 @@ TEXT2VEC_MODEL_PATH = r"D:\code\model\text2vec-large-chinese"
 LIBREOFFICE_PATH = r"D:\libreoffice\program\soffice.exe"
 
 # Poppler路径
-POPPLER_PATH = r"D:\poppler-25.12.0\Library\bin"
+POPPLER_PATH = r"D:\poppler-25.12.0\poppler-25.12.0\Library\bin"
 POPPLER_BIN_PATH = r"D:\Release-25.12.0-0\poppler-25.12.0\Library\bin"
 # ========== 关键修复：强制设置环境变量 ==========
 os.environ['PATH'] = f"{POPPLER_BIN_PATH};{os.environ.get('PATH', '')}"
