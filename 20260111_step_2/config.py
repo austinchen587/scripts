@@ -45,7 +45,7 @@ VISION_MODEL = "qwen3-vl:4b"  # 用于图片理解的模型 - 新增
 # 2. 新增：纯文本云端大模型 API 配置
 CLOUD_LLM_CONFIG = {
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "model": "qwen3.5-27b",  # 阿里云的性价比神机
+    "model": "qwen3.5-plus",  # 阿里云的性价比神机
     "api_key": "sk-7725072c412d4f4280d091a92772dda1", 
     "timeout": 300,
     "temperature": 0.1

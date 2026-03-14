@@ -35,7 +35,7 @@ OLLAMA_CONFIG = {
 # 👉 [新增] 纯文本云端大模型 API 配置
 CLOUD_LLM_CONFIG = {
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-    "model": "qwen-plus",  # 直接换上这个性价比神机！
+    "model": "qwen3.5-plus",  # 直接换上这个性价比神机！
     "api_key": "sk-7725072c412d4f4280d091a92772dda1", # 你的真实 API KEY
     "timeout": 300,
     "temperature": 0.1
