@@ -149,22 +149,22 @@ def process_whole_task(task):
                 else:
                     logger.info(f"      ⭕ [{b_name}] 未抓取到数据")
 
-            except AntiSpiderException as anti_spider_err:
-                logger.warning(f"⚠️ [{b_name}] 被拦截: {anti_spider_err}")
-                PLATFORM_COOLDOWN[platform_name] = time.time() + COOLDOWN_TIME
-                logger.error(f"🛑 [专属通道熔断] {platform_name} 在接下来的 {COOLDOWN_TIME/60:.0f} 分钟内将被隔离！")
-                
-                logger.info(f"🧹 [{b_name}] 正在自愈清洗专属缓存 (保留登录状态)...")
-                try:
-                    browser.clear_cache(cookies=False, history=False)
-                    browser.get("https://www.baidu.com")
-                    time.sleep(random.uniform(2, 4))
-                except Exception as clear_err:
-                    logger.error(f"      💥 [{b_name}] 清理缓存出错: {clear_err}")
-                
-                # 👉 [修复 1] 使用新的 save_task_result 记录重试状态
-                save_task_result(task, status='retry') 
-                break 
+            except AntiSpiderException as e:
+                    logger.error(f"🕸️ {e}")
+                    # 触发验证码后，进行避险处理
+                    logger.info(f"   -> 🔄 正在为 {plat} 执行避险重置 (跳转百度脱离险境)...")
+                    try:
+                        # 👉 [核心修复] 强行征用当前出事的标签页，直接飞去百度
+                        if hasattr(engine, 'tab') and engine.tab:
+                            engine.tab.get('https://www.baidu.com')
+                            time.sleep(2)
+                    except Exception as reset_e:
+                        logger.error(f"   -> ❌ 避险跳转失败: {reset_e}")
+                        pass
+                    
+                    PLATFORM_COOLDOWN[plat] = time.time() + COOLDOWN_TIME
+                    logger.warning(f"   -> ⏱️ {plat} 已进入冷静期 {COOLDOWN_TIME/60} 分钟，本轮跳过该平台。")
+                    continue
 
             except Exception as e:
                 logger.error(f"      💥 [{b_name}] 抓取过程出错: {e}")

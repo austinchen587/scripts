@@ -5,6 +5,32 @@ from engines.base_engine import BaseEngine
 from logger_helper import logger
 
 class JDEngine(BaseEngine):
+    # ============================================================
+    # 👉 [核心修复] 京东专属风控雷达：专门探测不换页的内嵌滑块弹窗！
+    # ============================================================
+    def check_and_handle_verification(self, platform_name='京东'):
+        # 1. 先查基础的标题和URL（调用父类逻辑）
+        super().check_and_handle_verification(platform_name)
+        
+        # 2. 探查京东特有的内嵌弹窗元素
+        if not self.tab: return
+        try:
+            # 京东滑块弹窗的常见特征元素
+            captcha_ele = self.tab.ele('#JDJRV-wrap-logon', timeout=0.1) or \
+                          self.tab.ele('.jcap_popup_body', timeout=0.1) or \
+                          self.tab.ele('text:验证一下，购物无忧', timeout=0.1) or \
+                          self.tab.ele('text:请完成下方验证', timeout=0.1) or \
+                          self.tab.ele('text:访问请求被拒绝', timeout=0.1)
+            
+            if captcha_ele:
+                logger.warning(f"🚨 [{platform_name}] 遭遇网页内嵌滑动验证码弹窗！")
+                raise AntiSpiderException(platform_name, "触发内嵌验证码弹窗")
+        except AntiSpiderException as e:
+            raise e
+        except Exception:
+            pass
+
+
     def search(self, keyword):
         if not self.init_tab('jd'): return []
         
