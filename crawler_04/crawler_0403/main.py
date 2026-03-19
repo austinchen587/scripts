@@ -82,8 +82,20 @@ def process_whole_task(task):
     item_name = task['item_name']
     brand_id = task.get('brand_id')
     
-    target_str = task.get('search_platform', '') or ''
-    target_str = target_str.strip()
+    # 🔥 提取平台，强制转成字符串并去除首尾空格
+    target_str = task.get('platform') or task.get('search_platform') or ''
+    target_str = str(target_str).strip().lower()
+
+    # ==========================================================
+    # 💡 [新增] 平台名称中英文“翻译器” (防止上游传拼音或缩写)
+    # ==========================================================
+    if 'taobao' in target_str or 'tb' in target_str:
+        target_str += ' 淘宝'
+    if 'jd' in target_str or 'jingdong' in target_str:
+        target_str += ' 京东'
+    if 'alibaba' in target_str:
+        target_str += ' 1688'
+    # ==========================================================
 
     logger.info(f"🔥 [领单] 开始处理: {item_name} (ID: {brand_id})")
 
@@ -94,16 +106,20 @@ def process_whole_task(task):
     ]
     
     platforms_to_search = []
-    if target_str:
+    
+    # 只要传了值，且不是 "-" 或 "无" 这种无效占位符
+    if target_str and target_str not in ['-', '无', '未知', 'null', 'None']:
         for p_name, p_class in all_platforms:
             if p_name in target_str:
                 platforms_to_search.append((p_name, p_class))
+                
         if platforms_to_search:
             logger.info(f"🎯 [目标平台] 系统指定: {[p[0] for p in platforms_to_search]}")
         else:
+            # 💡 [关键改动] 把到底传了什么无效字符打印出来！
             chosen_platform = random.choice(all_platforms)
             platforms_to_search.append(chosen_platform)
-            logger.info(f"🎯 [目标平台] 指定平台无效，随机单选兜底: {chosen_platform[0]}")
+            logger.warning(f"🎯 [目标平台] 指定平台无效 ('{target_str}')，已随机单选兜底: {chosen_platform[0]}")
     else:
         chosen_platform = random.choice(all_platforms)
         platforms_to_search.append(chosen_platform)
@@ -152,7 +168,7 @@ def process_whole_task(task):
             except AntiSpiderException as e:
                     logger.error(f"🕸️ {e}")
                     # 触发验证码后，进行避险处理
-                    logger.info(f"   -> 🔄 正在为 {plat} 执行避险重置 (跳转百度脱离险境)...")
+                    logger.info(f"   -> 🔄 正在为 {platform_name} 执行避险重置 (跳转百度脱离险境)...")
                     try:
                         # 👉 [核心修复] 强行征用当前出事的标签页，直接飞去百度
                         if hasattr(engine, 'tab') and engine.tab:
@@ -162,8 +178,8 @@ def process_whole_task(task):
                         logger.error(f"   -> ❌ 避险跳转失败: {reset_e}")
                         pass
                     
-                    PLATFORM_COOLDOWN[plat] = time.time() + COOLDOWN_TIME
-                    logger.warning(f"   -> ⏱️ {plat} 已进入冷静期 {COOLDOWN_TIME/60} 分钟，本轮跳过该平台。")
+                    PLATFORM_COOLDOWN[platform_name] = time.time() + COOLDOWN_TIME
+                    logger.warning(f"   -> ⏱️ {platform_name} 已进入冷静期 {COOLDOWN_TIME/60} 分钟，本轮跳过该平台。")
                     continue
 
             except Exception as e:
