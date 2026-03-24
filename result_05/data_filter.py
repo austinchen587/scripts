@@ -1,103 +1,103 @@
-# data_loader.py
-from db_manager import get_connection
-from config import TABLES
+import statistics
+import re
 from logger import logger
 
-def clean_and_filter_candidates(candidates):
-    """
-    高级预筛选逻辑：
-    1. 基础清洗（去0元、脏数据）
-    2. 价格三级分组 (Low, Mid, High)
-    3. 组内离散度过滤 (组内均值偏差 > 50% 剔除)
-    返回：{'low': [...], 'mid': [...], 'high': [...]} 
-    """
+def clean_and_filter_candidates(candidates, demand):
     logger.info(f"开始清洗候选池: 初始 {len(candidates)} 家")
     
-    # 1. 基础清洗
+    brand_req = demand.get('brand', '') or demand.get('suggested_brand', '')
+    specs_req = demand.get('specifications', '')
+    item_name = demand.get('item_name', '')
+    
+    # 【新增】智能提取规格中的核心数字（如“24盘”中的“24”）
+    # 修改后：提取数字+紧跟其后的一个中文单位（如 "24盘", "150抽", "304不"会忽略）
+    key_numbers = re.findall(r'\d+[\u4e00-\u9fa5]?', specs_req)
+    # 过滤掉无意义的常见数字组合
+    key_numbers = [n for n in key_numbers if n not in ['304', '201', '220V', '50Hz']]
+    
     valid = []
     for c in candidates:
         try:
             p = float(c.get('price', 0))
             sku = str(c.get('sku', ''))
             shop = str(c.get('shop_name', ''))
+            title = c.get('title', '').upper()
             
-            if p <= 0.01: continue
-            if 'NO_RESULT' in sku: continue
-            if 'System_Auto' in shop: continue
+            if p <= 0.01 or 'NO_RESULT' in sku or 'System_Auto' in shop: 
+                continue
                 
             c['price'] = p
+            c['score'] = 0  
+            
+            # A. 品牌强制加分
+            if brand_req and brand_req.upper() in title:
+                c['score'] += 100
+            elif brand_req and brand_req.upper() in shop.upper():
+                c['score'] += 50
+                
+            # B. 规格命中加分
+            specs_words = [w for w in re.split(r'[,;，；\s]+', specs_req) if len(w) > 1]
+            for word in specs_words:
+                if word.upper() in title:
+                    c['score'] += 20
+                    
+            # 【新增】C. 核心数字暴击加分（防止24盘被误杀）
+            for num in key_numbers:
+                # 确保是独立数字，比如 24盘，防误伤
+                if num in title:
+                    c['score'] += 80  
+                    
+            # D. 降权排雷词
+            bad_words = ["配件", "支架", "定金", "尾款", "适用", "兼容", "专用液", "耗材", "维修", "以旧换新", "起步"]
+            is_buying_accessory = any(bw in item_name or bw in specs_req for bw in ["配件", "耗材", "液", "支架"])
+            
+            if not is_buying_accessory:
+                if any(bw in title for bw in bad_words):
+                    c['score'] -= 200  
+            
             valid.append(c)
-        except: continue
+        except Exception as e:
+            logger.error(f"解析 SKU 异常: {e}")
+            continue
 
-    if not valid:
-        logger.warning("所有候选商品均因数据无效被剔除！")
-        return []
+    positive_candidates = [x for x in valid if x['score'] >= 0]
+    if positive_candidates:
+        valid = positive_candidates
+        logger.info(f"经过硬性引流排雷，剩余 {len(valid)} 家高质量商品")
+    else:
+        logger.warning("未发现完美匹配的商品，保留全部数据进行 AI 兜底评估")
 
-    # 如果数量太少，不分组，直接返回单组
-    if len(valid) < 9:
-        logger.info(f"有效商品仅 {len(valid)} 家，不进行分层，直接作为单一分组。")
-        # 简单过滤离散度
-        avg = sum(x['price'] for x in valid) / len(valid)
-        final = [x for x in valid if abs(x['price'] - avg)/avg <= 0.8] # 宽松一点
-        if not final: final = valid
-        return {'default': final}
+    if not valid: return {}
 
-    # 2. 排序
-    valid.sort(key=lambda x: x['price'])
+    # 【优化】先按分数排序，让好商品排在前面
+    valid.sort(key=lambda x: (-x['score'], x['price']))
 
-    # 3. 三分位分组
-    # 使用 numpy.array_split 模拟或简单切片
-    n = len(valid)
-    k, m = divmod(n, 3)
-    # 计算切分点
-    # split into 3 parts
-    # part 1: 0 -> k + (1 if m>0 else 0)
-    # part 2: ... -> ... + k + (1 if m>1 else 0)
-    # part 3: ...
-    
-    p1 = k + (1 if m>0 else 0)
-    p2 = p1 + k + (1 if m>1 else 0)
-    
-    low_group = valid[:p1]
-    mid_group = valid[p1:p2]
-    high_group = valid[p2:]
-    
-    logger.info(f"价格分层: 低价组({len(low_group)}) | 中价组({len(mid_group)}) | 高价组({len(high_group)})")
+    # 【核心优化】只用前 50% 的高分商品来计算中位数，防止被底层垃圾配件拉低！
+    # 【核心优化】只用前 50% 的高分商品来计算中位数，防止被底层垃圾配件拉低！
+    top_half = valid[:max(1, len(valid)//2)]
+    prices = [x['price'] for x in top_half]
+    median_price = statistics.median(prices)
+    logger.info(f"当前池内(高分段)价格中位数为: ￥{median_price:.2f}")
 
-    # 4. 组内离散度过滤函数
-    def filter_group(group, group_name):
-        if not group: return []
-        prices = [x['price'] for x in group]
+    # 👉 【核心修复】动态安全上限：即便中位数被垃圾拉低，也至少给足 8000 元的安全空间！
+    upper_bound = max(median_price * 6.0, 8000.0) 
+    lower_bound = median_price * 0.2 
+
+    final_pool = []
+    for x in valid:
+        is_price_ok = (x['price'] >= lower_bound and x['price'] <= upper_bound)
+        # 👉 降低 VIP 门槛：只要命中了任何规格词/数字/品牌（分数>=20），直接无视价格限制！
+        has_vip_pass = (x['score'] >= 20) 
         
-        # 去掉组内最高和最低（如果组够大），防止组内均值被边界值拉偏
-        if len(group) > 5:
-            core_prices = sorted(prices)[1:-1]
+        if is_price_ok or has_vip_pass:
+            final_pool.append(x)
         else:
-            core_prices = prices
-            
-        if not core_prices: core_prices = prices # 兜底
-            
-        avg = sum(core_prices) / len(core_prices)
-        logger.info(f"  > [{group_name}] 均价基准: ￥{avg:.2f}")
-        
-        cleaned = []
-        for x in group:
-            if abs(x['price'] - avg) / avg <= 0.5: # 50% 偏差阈值
-                cleaned.append(x)
-            else:
-                logger.info(f"    - [剔除] 组内离散: ￥{x['price']} (偏离 {group_name} 均价 {abs(x['price'] - avg)/avg*100:.0f}%)")
-        
-        # 兜底：如果过滤完了，就只保留核心均价附近的
-        if not cleaned:
-            logger.warning(f"    ! [{group_name}] 过滤后为空，回退保留组内数据")
-            return group
-        return cleaned
+            logger.info(f"  - [价格异常剥离] 剔除: ￥{x['price']} - {x.get('title')[:30]} (分数:{x['score']})")
 
-    # 执行组内过滤
-    filtered_tiers = {
-        'low': filter_group(low_group, "低价组"),
-        'mid': filter_group(mid_group, "中价组"),
-        'high': filter_group(high_group, "高价组")
-    }
-    
-    return filtered_tiers
+    if not final_pool:
+        final_pool = valid
+
+    final_pool.sort(key=lambda x: (-x['score'], x['price']))
+    logger.info(f"🎯 清洗完成，最终保留 {len(final_pool)} 家高匹配度商品直接进入淘汰赛")
+
+    return {'default': final_pool[:30]}

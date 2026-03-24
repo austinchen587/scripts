@@ -43,3 +43,5 @@ env/
 # 其他临时文件
 *.bat
 *.tmp
+
+result_05/test/

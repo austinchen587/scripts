@@ -37,7 +37,7 @@ CLOUD_LLM_CONFIG = {
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
     "model": "qwen3.5-plus",  # 直接换上这个性价比神机！
     "api_key": "sk-7725072c412d4f4280d091a92772dda1", # 你的真实 API KEY
-    "timeout": 45,
+    "timeout": 120,
     "temperature": 0.1
 }
 
@@ -46,8 +46,12 @@ CLOUD_LLM_CONFIG = {
 # 增加了 sleep_between_batches 和 retry_backoff
 # ==========================================
 BATCH_CONFIG = {
-    "batch_size": 10,           # 每组10家
+    "batch_size": 8,           # 每组10家
     "winners_per_batch": 3,     # 每组晋级3家
     "sleep_between_batches": 2.0,  # 正常批次间隔休息2秒 (防止Ollama过热)
     "retry_backoff": 5.0        # 报错时等待5秒再重试
 }
+
+# 👉 [新增] 详情爬取 API 配置
+API_KEY = "t3970966868"
+API_SECRET = "6868cdc9"
