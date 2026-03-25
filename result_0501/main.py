@@ -6,7 +6,6 @@ import json
 import redis
 from db_manager import init_result_table, save_analysis_result
 from data_loader import fetch_single_task
-from llm_service import tournament_selection
 from config import CLOUD_LLM_CONFIG, REDIS_CONFIG
 from logger import logger
 from llm_service import run_initial_filter, run_final_decision
