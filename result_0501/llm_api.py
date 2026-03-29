@@ -150,8 +150,9 @@ def build_final_prompt(demand, finalists):
             {{"rank": 2, "sku": "...", "match_evidence": "...", "reason": "..."}},
             {{"rank": 3, "sku": "...", "match_evidence": "...", "reason": "..."}}
         ],
-        "overall_reasoning": "【精简输出】：\\n1. 财务核算：Top1单价 × {qty}数量 × 1.15毛利率 = 预估采购总价。对比预算风险。\\n2. 合规与履约提示：总结本次选品的品牌符合度及隐性成本风险。"
+        "overall_reasoning": "请详细总结本次决选的整体评判逻辑和淘汰其他商品的原因"
     }}
+
     """
 
 # ============================================================

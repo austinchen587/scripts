@@ -80,13 +80,14 @@ def run_initial_filter(demand, candidates):
     return current_pool[:5]
 
 def run_final_decision(demand, top_5_candidates, platform, pid, brand_id):
-    """第四步：终极决选"""
+    """第四步：终极决选（带高分兜底机制）"""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             for c in top_5_candidates:
                 num_iid = c.get('sku')
-                cur.execute(f"SELECT raw_data FROM procurement_commodity_{platform}_detail WHERE brand_id = %s AND num_iid = %s ORDER BY id DESC LIMIT 1", (brand_id, str(num_iid)))
+                table_detail = f"procurement_commodity_{platform}_detail"
+                cur.execute(f"SELECT raw_data FROM {table_detail} WHERE brand_id = %s AND num_iid = %s ORDER BY id DESC LIMIT 1", (brand_id, str(num_iid)))
                 row = cur.fetchone()
                 if row and row[0]:
                     detail_json = row[0] if isinstance(row[0], dict) else json.loads(row[0])
@@ -104,7 +105,9 @@ def run_final_decision(demand, top_5_candidates, platform, pid, brand_id):
     
     final_selected = []
     pool_map = {str(c['sku']): c for c in top_5_candidates}
-    if llm_result and 'selected' in llm_result:
+    
+    # 尝试解析 AI 的正常推荐
+    if llm_result and 'selected' in llm_result and llm_result['selected']:
         for idx, item in enumerate(llm_result['selected'][:3]):
             sku = str(item.get('sku') or item.get('id') or "")
             if sku in pool_map:
@@ -112,6 +115,30 @@ def run_final_decision(demand, top_5_candidates, platform, pid, brand_id):
                 final_selected.append({
                     "rank": idx + 1, "sku": sku, "shop": orig['shop_name'], 
                     "price": orig['price'], "platform": orig.get('platform',''),
-                    "detail_url": orig['detail_url'], "reason": f"【规格核验: {item.get('match_evidence', '完成')}】 {item.get('reason', '')}"
+                    "detail_url": orig['detail_url'], 
+                    "reason": f"【规格核验: {item.get('match_evidence', '完成')}】 {item.get('reason', '')}"
                 })
-    return {"selected": final_selected, "overall_reasoning": llm_result.get('overall_reasoning', '') if llm_result else ""}
+    
+    # 👉 核心修改：如果 AI 罢工或全军覆没，触发系统终极保底机制
+    if not final_selected:
+        logger.warning("⚠️ 终审全军覆没！触发系统兜底，强推本地评分前 3 名。")
+        
+        # 确保按分数从高到低、价格从低到高进行终极排序
+        top_5_candidates.sort(key=lambda x: (-x.get('score', 0), x.get('price', 0)))
+        
+        # 强行保送前 3 名
+        for idx, c in enumerate(top_5_candidates[:3]):
+            final_selected.append({
+                "rank": idx + 1, 
+                "sku": str(c['sku']), 
+                "shop": c['shop_name'], 
+                "price": c['price'], 
+                "platform": c.get('platform', platform),
+                "detail_url": c['detail_url'], 
+                "reason": f"【系统智能兜底】AI未选出完美匹配项。该商品在初筛中获得 {c.get('score', 0)} 分，综合表现最佳，系统自动保送。"
+            })
+        overall_reasoning = "AI终审判定无完美匹配项，系统触发保底机制，按算法评分推荐最优解。"
+    else:
+        overall_reasoning = llm_result.get('overall_reasoning', '') if llm_result else "AI顺利完成最终决选。"
+
+    return {"selected": final_selected, "overall_reasoning": overall_reasoning}

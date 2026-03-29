@@ -9,6 +9,7 @@ from data_loader import fetch_single_task
 from config import CLOUD_LLM_CONFIG, REDIS_CONFIG
 from logger import logger
 from llm_service import run_initial_filter, run_final_decision
+from concurrent.futures import ThreadPoolExecutor
 
 # 代理配置：防止请求大模型时误走系统代理
 os.environ['NO_PROXY'] = 'localhost,127.0.0.1,0.0.0.0'
@@ -100,34 +101,58 @@ def process_final_task(task):
 
 
 def main():
-    logger.info("=== 🚀 智能选品大脑 (分离式 AI 引擎) 启动 ===")
-    init_result_table() 
+    logger.info("=== 🚀 智能选品大脑 (多线程并发版) 启动 ===")
     
     try:
         r_client = redis.Redis(**REDIS_CONFIG)
         r_client.ping()
         logger.info("✅ 成功连接至云端 Redis。监听 [ai_filter_queue] 和 [ai_final_queue]...")
     except Exception as e:
-        logger.error(f"❌ Redis 连接失败: {e}")
+        logger.error(f"Redis 连接失败: {e}")
         sys.exit(1)
+
+    # 💡 核心优化：开启 10 个并发线程。相当于雇了 10 个 AI 业务员同时看单子
+    executor = ThreadPoolExecutor(max_workers=10)
+
+    def worker_task(queue_name, payload, r_conn):
+        """线程专属的工作函数"""
+        try:
+            if queue_name == "ai_filter_queue":
+                process_filter_task(payload, r_conn)
+            elif queue_name == "ai_final_queue":
+                process_final_task(payload)
+        except Exception as e:
+            logger.error(f"❌ 线程处理任务时发生异常: {e}", exc_info=True)
 
     while True:
         try:
-            task_data = r_client.blpop(["ai_filter_queue", "ai_final_queue"], timeout=0)
+            # 阻塞读取，60秒超时心跳
+            task_data = r_client.blpop(["ai_filter_queue", "ai_final_queue"], timeout=60)
+            
             if task_data:
+                # 解析任务
                 queue_name = task_data[0]
                 payload = json.loads(task_data[1])
                 
-                if queue_name == "ai_filter_queue":
-                    process_filter_task(payload, r_client)
-                elif queue_name == "ai_final_queue":
-                    process_final_task(payload)
-                    
-        except KeyboardInterrupt:
-            logger.info("👋 接收到停止指令，程序退出。")
-            break
+                # 💡 核心优化：收到任务后，直接丢给线程池后台执行！
+                # 主线程【不等待】它执行完，而是瞬间回到 while 循环，去 Redis 抓取下一个任务！
+                executor.submit(worker_task, queue_name, payload, r_client)
+            else:
+                # 60秒没任务，发送心跳防断开
+                r_client.ping()
+                
+        except redis.ConnectionError:
+            logger.warning("⚠️ 检测到 Redis 连接断开，正在尝试静默重连...")
+            time.sleep(5)
+            try:
+                r_client = redis.Redis(**REDIS_CONFIG)
+                r_client.ping()
+                logger.info("✅ Redis 重连成功，继续监听！")
+            except Exception:
+                pass
+                
         except Exception as e:
-            logger.error(f"⚠️ 主循环异常: {e}")
+            logger.error(f"❌ 运行循环发生异常: {e}", exc_info=True)
             time.sleep(5)
 
 if __name__ == "__main__":
